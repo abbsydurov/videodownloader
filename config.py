@@ -105,7 +105,7 @@ def get_p_emoji(name: str) -> str:
     if name in PREMIUM_EMOJIS_CACHE:
         char, custom_id = PREMIUM_EMOJIS_CACHE[name]
         if custom_id:
-            return f'<tg-emoji emoji-id="{custom_id}">{char}</tg-emoji>'
+            return f'<tg-emoji emoji-id="{custom_id}"></tg-emoji>'
         return char
     return DEFAULT_PREMIUM_EMOJIS.get(name, ("✨", ""))[0]
 
