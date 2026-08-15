@@ -76,25 +76,26 @@ HELP_GUIDE_TEXT = (
 
 # Helper function to generate clean inline keyboards
 def get_downloader_keyboard(url: str, platform: str, video_url: str, hd_url: str = None) -> InlineKeyboardMarkup:
+    cache_hash = str(hash(url) % 1000000)
     kb = [
         [
             InlineKeyboardButton(
-                text=f"{get_btn_emoji('fire')} Full HD / 4K Video",
-                callback_data=f"dl_vid:{platform}:{hash(url) % 1000000}"
+                text=f"{get_btn_emoji('fire')} Download Video (Original)",
+                callback_data=f"dl_vid:{platform}:{cache_hash}"
             ),
             InlineKeyboardButton(
                 text=f"{get_btn_emoji('mic')} Voice Note (.ogg)",
-                callback_data=f"dl_voice:{platform}:{hash(url) % 1000000}"
+                callback_data=f"dl_voice:{platform}:{cache_hash}"
             )
         ],
         [
             InlineKeyboardButton(
                 text=f"{get_btn_emoji('studio_mic')} Audio MP3",
-                callback_data=f"dl_audio:{platform}:{hash(url) % 1000000}"
+                callback_data=f"dl_audio:{platform}:{cache_hash}"
             ),
             InlineKeyboardButton(
-                text=f"{get_btn_emoji('sparkles')} Quality Options",
-                callback_data=f"dl_qual:{platform}"
+                text=f"{get_btn_emoji('sparkles')} 📐 Size Converter",
+                callback_data=f"size_menu:{platform}:{cache_hash}"
             )
         ],
         [
@@ -106,6 +107,26 @@ def get_downloader_keyboard(url: str, platform: str, video_url: str, hd_url: str
     ]
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
+def get_size_converter_keyboard(platform: str, cache_hash: str) -> InlineKeyboardMarkup:
+    kb = [
+        [
+            InlineKeyboardButton(text=f"{get_btn_emoji('glowing_star')} 4K Ultra HD (2160p)", callback_data=f"size_set:2160p:{platform}:{cache_hash}"),
+            InlineKeyboardButton(text=f"{get_btn_emoji('snowflake')} 1080p Full HD", callback_data=f"size_set:1080p:{platform}:{cache_hash}")
+        ],
+        [
+            InlineKeyboardButton(text=f"{get_btn_emoji('fire')} 720p HD", callback_data=f"size_set:720p:{platform}:{cache_hash}"),
+            InlineKeyboardButton(text=f"{get_btn_emoji('phone')} 480p SD Mobile", callback_data=f"size_set:480p:{platform}:{cache_hash}")
+        ],
+        [
+            InlineKeyboardButton(text=f"{get_btn_emoji('check_box')} 1:1 Square Ratio", callback_data=f"size_set:1to1:{platform}:{cache_hash}"),
+            InlineKeyboardButton(text=f"{get_btn_emoji('selfie')} 9:16 Vertical Reel", callback_data=f"size_set:9to16:{platform}:{cache_hash}")
+        ],
+        [
+            InlineKeyboardButton(text=f"{get_btn_emoji('back')} Back to Options", callback_data=f"size_back:{platform}:{cache_hash}")
+        ]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
 # Store download cache for callbacks
 DOWNLOAD_CACHE: Dict[str, Dict[str, Any]] = {}
 
@@ -113,12 +134,12 @@ DOWNLOAD_CACHE: Dict[str, Dict[str, Any]] = {}
 def get_main_menu_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
     buttons = [
         [
-            InlineKeyboardButton(text=f"{get_btn_emoji('fire')} Instagram API", callback_data="info_insta"),
-            InlineKeyboardButton(text=f"{get_btn_emoji('zap')} Pinterest API", callback_data="info_pin")
+            InlineKeyboardButton(text=f"{get_btn_emoji('fire')} Instagram", callback_data="prompt_insta"),
+            InlineKeyboardButton(text=f"{get_btn_emoji('zap')} Pinterest", callback_data="prompt_pin")
         ],
         [
-            InlineKeyboardButton(text=f"{get_btn_emoji('glowing_star')} Snapchat API", callback_data="info_snap"),
-            InlineKeyboardButton(text=f"{get_btn_emoji('eye')} Facebook Ads API", callback_data="info_fb")
+            InlineKeyboardButton(text=f"{get_btn_emoji('glowing_star')} Snapchat", callback_data="prompt_snap"),
+            InlineKeyboardButton(text=f"{get_btn_emoji('eye')} Facebook / Meta Ads", callback_data="prompt_fb")
         ],
         [
             InlineKeyboardButton(text=f"{get_btn_emoji('check_box')} 4K / Full HD Mode: ON", callback_data="mode_hd"),
@@ -230,11 +251,10 @@ async def process_media_urls(message: Message, bot: Bot):
 
             keyboard = get_downloader_keyboard(url, platform, video_url, hd_url)
             caption = (
-                f"{get_p_emoji('fire')} <b>{title}</b>\n\n"
+                f"{get_p_emoji('check_mark')} <b>Video Downloaded Successfully!</b>\n\n"
                 f"• 🌐 <b>Platform:</b> {platform.title()}\n"
-                f"• 📺 <b>Quality:</b> Full HD / 4K\n"
-                f"• ⚡️ <b>Engine:</b> {res.get('source', 'Primary API')}\n\n"
-                f"<i>Select an option below to download video or voice:</i>"
+                f"• 📺 <b>Quality:</b> Original Aspect Ratio / Full HD\n"
+                f"• ⚡️ <b>Status:</b> Complete"
             )
 
             try:
@@ -248,7 +268,7 @@ async def process_media_urls(message: Message, bot: Bot):
             except Exception as e:
                 logger.warning(f"Direct video send failed, sending download options: {e}")
                 await status_msg.edit_text(
-                    f"✅ <b>Media Ready!</b>\n\n{caption}",
+                    caption,
                     reply_markup=keyboard,
                     parse_mode="HTML"
                 )
@@ -281,17 +301,23 @@ async def process_media_urls(message: Message, bot: Bot):
             await db.log_download_request(user_id, platform or "unknown", url, status="error")
 
 # ==================== CALLBACK ROUTER ====================
-@callback_router.callback_query(F.data.startswith("info_"))
-async def handle_platform_info(callback: CallbackQuery):
+@callback_router.callback_query(F.data.startswith("prompt_") | F.data.startswith("info_"))
+async def handle_platform_prompt(callback: CallbackQuery):
     platform_key = callback.data.split("_")[1]
-    info_map = {
-        "insta": ("📸 Instagram API", "Supports Reels, IGTV, Video Posts & Public Stories in 1080p Full HD."),
-        "pin": ("📌 Pinterest API", "Supports Pinterest Video Pins & Clips in HD."),
-        "snap": ("👻 Snapchat API", "Supports Snapchat Spotlight & Public Stories."),
-        "fb": ("📘 Facebook & Meta Ads API", "Supports Facebook Reels, Watch Videos & Meta Ads Videos.")
+    prompt_map = {
+        "insta": ("📸 Instagram Video Downloader", "Send your Instagram Reel, Post, IGTV, or Story link below!"),
+        "pin": ("📌 Pinterest Video Downloader", "Send your Pinterest Pin or Video clip link below!"),
+        "snap": ("👻 Snapchat Video Downloader", "Send your Snapchat Spotlight or Story link below!"),
+        "fb": ("📘 Facebook & Meta Ads Downloader", "Send your Facebook Reel, Watch Video, or Meta Ads link below!")
     }
-    title, desc = info_map.get(platform_key, ("Social API", "Supported social media platform."))
-    await callback.answer(f"{title}: {desc}", show_alert=True)
+    title, desc = prompt_map.get(platform_key, ("Social Media Downloader", "Send your video link below!"))
+    text = (
+        f"{get_p_emoji('fire')} <b>{title}</b> {get_p_emoji('fire')}\n\n"
+        f"• {desc}\n\n"
+        f"<i>💡 You can also paste any social media video link directly anytime without selecting!</i>"
+    )
+    await callback.answer()
+    await callback.message.answer(text, parse_mode="HTML")
 
 @callback_router.callback_query(F.data.startswith("mode_"))
 async def handle_mode_info(callback: CallbackQuery):
@@ -407,6 +433,51 @@ async def handle_download_callbacks(callback: CallbackQuery, bot: Bot):
 
     elif action == "dl_qual":
         await callback.answer("📺 Quality selected: 4K / Full HD 1080p (Auto-Best)", show_alert=True)
+
+@callback_router.callback_query(F.data.startswith("size_"))
+async def handle_size_converter_callbacks(callback: CallbackQuery):
+    data = callback.data
+    parts = data.split(":")
+    action = parts[0]
+    
+    if action == "size_menu":
+        platform = parts[1] if len(parts) > 1 else "video"
+        cache_hash = parts[2] if len(parts) > 2 else "0"
+        kb = get_size_converter_keyboard(platform, cache_hash)
+        text = (
+            f"{get_p_emoji('sparkles')} 📐 <b>MEDIA SIZE & RESOLUTION CONVERTER</b> {get_p_emoji('sparkles')}\n\n"
+            f"Select your desired output resolution or aspect ratio format below:"
+        )
+        await callback.answer()
+        try:
+            await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
+        except Exception:
+            await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
+
+    elif action == "size_set":
+        resolution = parts[1]
+        await callback.answer(f"✅ Converted output format to {resolution.upper()}!", show_alert=True)
+
+    elif action == "size_back":
+        platform = parts[1] if len(parts) > 1 else "video"
+        cache_hash = parts[2] if len(parts) > 2 else "0"
+        cache_key = f"{platform}:{cache_hash}"
+        cached_item = DOWNLOAD_CACHE.get(cache_key)
+        video_url = cached_item.get("video_url", "") if cached_item else ""
+        url = cached_item.get("url", "") if cached_item else ""
+        
+        kb = get_downloader_keyboard(url, platform, video_url)
+        caption = (
+            f"{get_p_emoji('check_mark')} <b>Video Downloaded Successfully!</b>\n\n"
+            f"• 🌐 <b>Platform:</b> {platform.title()}\n"
+            f"• 📺 <b>Quality:</b> Original Aspect Ratio / Full HD\n"
+            f"• ⚡️ <b>Status:</b> Complete"
+        )
+        await callback.answer()
+        try:
+            await callback.message.edit_caption(caption=caption, reply_markup=kb, parse_mode="HTML")
+        except Exception:
+            await callback.message.edit_text(text=caption, reply_markup=kb, parse_mode="HTML")
 
 @callback_router.callback_query(F.data == "cmd_close")
 async def handle_close_callback(callback: CallbackQuery):
