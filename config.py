@@ -35,7 +35,7 @@ MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://notimepass367_db_user:abbsy%40
 MONGO_DB_URI = MONGO_URI
 DB_NAME = os.getenv("DB_NAME", "downloader_bot_db")
 
-WELCOME_IMAGE = os.getenv("WELCOME_IMAGE", "https://i.ibb.co/Gfc7zqjp/Auto-Rq-Tools.png")
+WELCOME_IMAGE = os.getenv("WELCOME_IMAGE", "https://ibb.co/Xf62jMmQ")
 
 # Primary APIs provided
 API_ENDPOINTS = {
