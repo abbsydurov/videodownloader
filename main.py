@@ -6,16 +6,17 @@ import tempfile
 import time
 from datetime import datetime
 from collections import defaultdict
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Callable, Awaitable
 
-from aiogram import Bot, Dispatcher, Router, F, types
+from aiogram import Bot, Dispatcher, Router, F, BaseMiddleware, types
 from aiogram.enums import ParseMode, ChatType
 from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import CommandStart, Command
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton, Message,
     CallbackQuery, InlineQuery, InlineQueryResultArticle,
-    InlineQueryResultVideo, InputTextMessageContent, URLInputFile
+    InlineQueryResultVideo, InputTextMessageContent, URLInputFile,
+    TelegramObject
 )
 from aiogram.exceptions import TelegramAPIError
 
@@ -26,8 +27,26 @@ from config import (
 import database as db
 import downloader
 
+# Middleware for registering user activity on every incoming update
+class UserActivityMiddleware(BaseMiddleware):
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: Dict[str, Any]
+    ) -> Any:
+        if isinstance(event, Message) and event.from_user:
+            try:
+                await db.register_user(
+                    user_id=event.from_user.id,
+                    first_name=event.from_user.first_name or "",
+                    username=event.from_user.username or ""
+                )
+            except Exception as e:
+                logger.warning(f"Failed to register user: {e}")
+        return await handler(event, data)
+
 # Initialize Routers
-guard_router = Router(name="access_guard")
 start_router = Router(name="start_handler")
 downloader_router = Router(name="downloader_handler")
 callback_router = Router(name="callback_handler")
@@ -89,17 +108,6 @@ def get_downloader_keyboard(url: str, platform: str, video_url: str, hd_url: str
 
 # Store download cache for callbacks
 DOWNLOAD_CACHE: Dict[str, Dict[str, Any]] = {}
-
-# ==================== ACCESS GUARD ROUTER ====================
-@guard_router.message()
-async def user_activity_guard(message: Message):
-    if message.from_user:
-        await db.register_user(
-            user_id=message.from_user.id,
-            first_name=message.from_user.first_name or "",
-            username=message.from_user.username or ""
-        )
-    return True
 
 # ==================== START & HELP ROUTER ====================
 def get_main_menu_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
@@ -632,8 +640,10 @@ async def main():
     )
     dp = Dispatcher()
 
+    # Outer Middleware for tracking user activity without blocking routers
+    dp.message.outer_middleware(UserActivityMiddleware())
+
     # Include Routers
-    dp.include_router(guard_router)
     dp.include_router(start_router)
     dp.include_router(downloader_router)
     dp.include_router(callback_router)
