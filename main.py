@@ -22,7 +22,7 @@ from aiogram.exceptions import TelegramAPIError
 
 from config import (
     BOT_TOKEN, SUPER_ADMIN_ID, LOG_CHANNEL_ID, WELCOME_IMAGE,
-    get_p_emoji, get_btn_emoji, logger
+    get_p_emoji, get_btn_emoji, get_btn_emoji_id, logger
 )
 import database as db
 import downloader
@@ -80,40 +80,32 @@ ADMIN_HELP_GUIDE = (
     "• <code>/broadcast</code> ── <i>Send announcement to all registered users</i>"
 )
 
-# Helper function to generate clean compact inline keyboards with official Telegram button styles
+# Helper function to generate styled inline buttons with colors (primary, success, danger) and custom emoji icons
+def make_btn(text: str, callback_data: str, style: str = "primary", emoji_name: str = None) -> InlineKeyboardButton:
+    kwargs = {
+        "text": f"{get_btn_emoji(emoji_name)} {text}" if emoji_name else text,
+        "callback_data": callback_data,
+        "style": style
+    }
+    if emoji_name:
+        emoji_id = get_btn_emoji_id(emoji_name)
+        if emoji_id:
+            kwargs["icon_custom_emoji_id"] = emoji_id
+    return InlineKeyboardButton(**kwargs)
+
 def get_downloader_keyboard(url: str, platform: str, video_url: str, hd_url: str = None) -> InlineKeyboardMarkup:
     cache_hash = str(hash(url) % 1000000)
     kb = [
         [
-            InlineKeyboardButton(
-                text=f"{get_btn_emoji('fire')} 🎬 Video (Original 4K)",
-                callback_data=f"dl_vid:{platform}:{cache_hash}",
-                style="success"
-            ),
-            InlineKeyboardButton(
-                text=f"{get_btn_emoji('mic')} 🎙 Voice Note",
-                callback_data=f"dl_voice:{platform}:{cache_hash}",
-                style="primary"
-            )
+            make_btn("🎬 Video (Original 4K)", f"dl_vid:{platform}:{cache_hash}", style="success", emoji_name="fire"),
+            make_btn("🎙 Voice Note", f"dl_voice:{platform}:{cache_hash}", style="primary", emoji_name="mic")
         ],
         [
-            InlineKeyboardButton(
-                text=f"{get_btn_emoji('studio_mic')} 🎵 Audio MP3",
-                callback_data=f"dl_audio:{platform}:{cache_hash}",
-                style="primary"
-            ),
-            InlineKeyboardButton(
-                text=f"{get_btn_emoji('sparkles')} 📐 Size Converter",
-                callback_data=f"size_menu:{platform}:{cache_hash}",
-                style="primary"
-            )
+            make_btn("🎵 Audio MP3", f"dl_audio:{platform}:{cache_hash}", style="primary", emoji_name="studio_mic"),
+            make_btn("📐 Size Converter", f"size_menu:{platform}:{cache_hash}", style="primary", emoji_name="sparkles")
         ],
         [
-            InlineKeyboardButton(
-                text=f"{get_btn_emoji('trash')} 🗑 Close",
-                callback_data="cmd_close",
-                style="danger"
-            )
+            make_btn("🗑 Close", "cmd_close", style="danger", emoji_name="trash")
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=kb)
@@ -121,19 +113,19 @@ def get_downloader_keyboard(url: str, platform: str, video_url: str, hd_url: str
 def get_size_converter_keyboard(platform: str, cache_hash: str) -> InlineKeyboardMarkup:
     kb = [
         [
-            InlineKeyboardButton(text=f"{get_btn_emoji('glowing_star')} 🌟 4K (2160p)", callback_data=f"size_set:2160p:{platform}:{cache_hash}", style="success"),
-            InlineKeyboardButton(text=f"{get_btn_emoji('snowflake')} 📺 1080p Full HD", callback_data=f"size_set:1080p:{platform}:{cache_hash}", style="primary")
+            make_btn("🌟 4K (2160p)", f"size_set:2160p:{platform}:{cache_hash}", style="success", emoji_name="glowing_star"),
+            make_btn("📺 1080p Full HD", f"size_set:1080p:{platform}:{cache_hash}", style="primary", emoji_name="snowflake")
         ],
         [
-            InlineKeyboardButton(text=f"{get_btn_emoji('fire')} 🔥 720p HD", callback_data=f"size_set:720p:{platform}:{cache_hash}", style="primary"),
-            InlineKeyboardButton(text=f"{get_btn_emoji('phone')} 📱 480p SD", callback_data=f"size_set:480p:{platform}:{cache_hash}")
+            make_btn("🔥 720p HD", f"size_set:720p:{platform}:{cache_hash}", style="primary", emoji_name="fire"),
+            make_btn("📱 480p SD", f"size_set:480p:{platform}:{cache_hash}", style="primary", emoji_name="phone")
         ],
         [
-            InlineKeyboardButton(text=f"{get_btn_emoji('check_box')} 📐 1:1 Square", callback_data=f"size_set:1to1:{platform}:{cache_hash}"),
-            InlineKeyboardButton(text=f"{get_btn_emoji('selfie')} 📱 9:16 Vertical", callback_data=f"size_set:9to16:{platform}:{cache_hash}")
+            make_btn("📐 1:1 Square", f"size_set:1to1:{platform}:{cache_hash}", style="primary", emoji_name="check_box"),
+            make_btn("📱 9:16 Vertical", f"size_set:9to16:{platform}:{cache_hash}", style="primary", emoji_name="selfie")
         ],
         [
-            InlineKeyboardButton(text=f"{get_btn_emoji('back')} 🔙 Back", callback_data=f"size_back:{platform}:{cache_hash}", style="danger")
+            make_btn("🔙 Back", f"size_back:{platform}:{cache_hash}", style="danger", emoji_name="back")
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=kb)
@@ -145,19 +137,19 @@ DOWNLOAD_CACHE: Dict[str, Dict[str, Any]] = {}
 def get_main_menu_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
     buttons = [
         [
-            InlineKeyboardButton(text=f"{get_btn_emoji('fire')} Instagram", callback_data="prompt_insta", style="primary"),
-            InlineKeyboardButton(text=f"{get_btn_emoji('zap')} Pinterest", callback_data="prompt_pin", style="primary")
+            make_btn("Instagram", "prompt_insta", style="primary", emoji_name="fire"),
+            make_btn("Pinterest", "prompt_pin", style="primary", emoji_name="zap")
         ],
         [
-            InlineKeyboardButton(text=f"{get_btn_emoji('glowing_star')} Snapchat", callback_data="prompt_snap", style="primary"),
-            InlineKeyboardButton(text=f"{get_btn_emoji('eye')} Facebook Ads", callback_data="prompt_fb", style="primary")
+            make_btn("Snapchat", "prompt_snap", style="primary", emoji_name="glowing_star"),
+            make_btn("Facebook Ads", "prompt_fb", style="primary", emoji_name="eye")
         ],
         [
-            InlineKeyboardButton(text=f"{get_btn_emoji('mic')} 🎙 Voice Guide / Instructions", callback_data="cmd_voice_guide", style="success")
+            make_btn("🎙 Voice Guide / Instructions", "cmd_voice_guide", style="success", emoji_name="mic")
         ]
     ]
     if is_admin:
-        buttons.append([InlineKeyboardButton(text=f"{get_btn_emoji('crown')} 👑 Admin Panel", callback_data="cmd_admin_panel", style="danger")])
+        buttons.append([make_btn("👑 Admin Panel", "cmd_admin_panel", style="danger", emoji_name="crown")])
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -400,15 +392,15 @@ async def handle_admin_panel_callback(callback: CallbackQuery):
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text=f"{get_btn_emoji('chart_up')} Live Stats", callback_data="cmd_stats"),
-            InlineKeyboardButton(text=f"{get_btn_emoji('gear')} Emojis List", callback_data="cmd_emojis")
+            make_btn("Live Stats", "cmd_stats", style="primary", emoji_name="chart_up"),
+            make_btn("Emojis List", "cmd_emojis", style="primary", emoji_name="gear")
         ],
         [
-            InlineKeyboardButton(text=f"{get_btn_emoji('clipboard')} System Logs", callback_data="cmd_logs"),
-            InlineKeyboardButton(text=f"{get_btn_emoji('speech')} Broadcast", callback_data="cmd_broadcast_prompt")
+            make_btn("System Logs", "cmd_logs", style="primary", emoji_name="clipboard"),
+            make_btn("Broadcast", "cmd_broadcast_prompt", style="primary", emoji_name="speech")
         ],
         [
-            InlineKeyboardButton(text=f"{get_btn_emoji('trash')} Close Panel", callback_data="cmd_close")
+            make_btn("Close Panel", "cmd_close", style="danger", emoji_name="trash")
         ]
     ])
     await callback.answer()
