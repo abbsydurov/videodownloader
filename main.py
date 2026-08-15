@@ -83,7 +83,7 @@ ADMIN_HELP_GUIDE = (
 # Helper function to generate styled inline buttons with colors (primary, success, danger) and custom emoji icons
 def make_btn(text: str, callback_data: str, style: str = "primary", emoji_name: str = None) -> InlineKeyboardButton:
     kwargs = {
-        "text": f"{get_btn_emoji(emoji_name)} {text}" if emoji_name else text,
+        "text": text,
         "callback_data": callback_data,
         "style": style
     }
@@ -91,21 +91,23 @@ def make_btn(text: str, callback_data: str, style: str = "primary", emoji_name: 
         emoji_id = get_btn_emoji_id(emoji_name)
         if emoji_id:
             kwargs["icon_custom_emoji_id"] = emoji_id
+        else:
+            kwargs["text"] = f"{get_btn_emoji(emoji_name)} {text}"
     return InlineKeyboardButton(**kwargs)
 
 def get_downloader_keyboard(url: str, platform: str, video_url: str, hd_url: str = None) -> InlineKeyboardMarkup:
     cache_hash = str(hash(url) % 1000000)
     kb = [
         [
-            make_btn("🎬 Video (Original 4K)", f"dl_vid:{platform}:{cache_hash}", style="success", emoji_name="fire"),
-            make_btn("🎙 Voice Note", f"dl_voice:{platform}:{cache_hash}", style="primary", emoji_name="mic")
+            make_btn("Video (Original 4K)", f"dl_vid:{platform}:{cache_hash}", style="success", emoji_name="fire"),
+            make_btn("Voice Note", f"dl_voice:{platform}:{cache_hash}", style="primary", emoji_name="mic")
         ],
         [
-            make_btn("🎵 Audio MP3", f"dl_audio:{platform}:{cache_hash}", style="primary", emoji_name="studio_mic"),
-            make_btn("📐 Size Converter", f"size_menu:{platform}:{cache_hash}", style="primary", emoji_name="sparkles")
+            make_btn("Audio MP3", f"dl_audio:{platform}:{cache_hash}", style="primary", emoji_name="studio_mic"),
+            make_btn("Size Converter", f"size_menu:{platform}:{cache_hash}", style="primary", emoji_name="sparkles")
         ],
         [
-            make_btn("🗑 Close", "cmd_close", style="danger", emoji_name="trash")
+            make_btn("Close", "cmd_close", style="danger", emoji_name="trash")
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=kb)
@@ -113,19 +115,19 @@ def get_downloader_keyboard(url: str, platform: str, video_url: str, hd_url: str
 def get_size_converter_keyboard(platform: str, cache_hash: str) -> InlineKeyboardMarkup:
     kb = [
         [
-            make_btn("🌟 4K (2160p)", f"size_set:2160p:{platform}:{cache_hash}", style="success", emoji_name="glowing_star"),
-            make_btn("📺 1080p Full HD", f"size_set:1080p:{platform}:{cache_hash}", style="primary", emoji_name="snowflake")
+            make_btn("4K (2160p)", f"size_set:2160p:{platform}:{cache_hash}", style="success", emoji_name="glowing_star"),
+            make_btn("1080p Full HD", f"size_set:1080p:{platform}:{cache_hash}", style="primary", emoji_name="snowflake")
         ],
         [
-            make_btn("🔥 720p HD", f"size_set:720p:{platform}:{cache_hash}", style="primary", emoji_name="fire"),
-            make_btn("📱 480p SD", f"size_set:480p:{platform}:{cache_hash}", style="primary", emoji_name="phone")
+            make_btn("720p HD", f"size_set:720p:{platform}:{cache_hash}", style="primary", emoji_name="fire"),
+            make_btn("480p SD", f"size_set:480p:{platform}:{cache_hash}", style="primary", emoji_name="phone")
         ],
         [
-            make_btn("📐 1:1 Square", f"size_set:1to1:{platform}:{cache_hash}", style="primary", emoji_name="check_box"),
-            make_btn("📱 9:16 Vertical", f"size_set:9to16:{platform}:{cache_hash}", style="primary", emoji_name="selfie")
+            make_btn("1:1 Square", f"size_set:1to1:{platform}:{cache_hash}", style="primary", emoji_name="check_box"),
+            make_btn("9:16 Vertical", f"size_set:9to16:{platform}:{cache_hash}", style="primary", emoji_name="selfie")
         ],
         [
-            make_btn("🔙 Back", f"size_back:{platform}:{cache_hash}", style="danger", emoji_name="back")
+            make_btn("Back", f"size_back:{platform}:{cache_hash}", style="danger", emoji_name="back")
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=kb)
@@ -145,11 +147,11 @@ def get_main_menu_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
             make_btn("Facebook Ads", "prompt_fb", style="primary", emoji_name="eye")
         ],
         [
-            make_btn("🎙 Voice Guide / Instructions", "cmd_voice_guide", style="success", emoji_name="mic")
+            make_btn("Voice Guide / Instructions", "cmd_voice_guide", style="success", emoji_name="mic")
         ]
     ]
     if is_admin:
-        buttons.append([make_btn("👑 Admin Panel", "cmd_admin_panel", style="danger", emoji_name="crown")])
+        buttons.append([make_btn("Admin Panel", "cmd_admin_panel", style="danger", emoji_name="crown")])
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
