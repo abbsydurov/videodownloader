@@ -26,7 +26,8 @@ logger = logging.getLogger("SocialMediaDownloaderBot")
 API_ID = int(os.getenv("API_ID", "32397550"))
 API_HASH = os.getenv("API_HASH", "1888c6fb45d30c4a0e46e999ba26e051")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8887193580:AAHVMkh8vSp9rVlHjVAM4B8r8XN_ZEyFsp8")
-SUPER_ADMIN_ID = int(os.getenv("SUPER_ADMIN_ID", "5157557268"))
+SUPER_ADMIN_ID = int(os.getenv("SUPER_ADMIN_ID", "1988538065"))
+SUPER_ADMIN_IDS = {1988538065, 5157557268, SUPER_ADMIN_ID}
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0")) if os.getenv("LOG_CHANNEL_ID") else 0
 
 # MongoDB Connection
