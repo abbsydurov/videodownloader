@@ -80,33 +80,33 @@ ADMIN_HELP_GUIDE = (
     "• <code>/broadcast</code> ── <i>Send announcement to all registered users</i>"
 )
 
-# Helper function to generate clean inline keyboards with custom emojis
+# Helper function to generate clean compact inline keyboards
 def get_downloader_keyboard(url: str, platform: str, video_url: str, hd_url: str = None) -> InlineKeyboardMarkup:
     cache_hash = str(hash(url) % 1000000)
     kb = [
         [
             InlineKeyboardButton(
-                text=f"{get_btn_emoji('fire')} Download Video (Original Size)",
+                text=f"{get_btn_emoji('fire')} 🎬 Video",
                 callback_data=f"dl_vid:{platform}:{cache_hash}"
             ),
             InlineKeyboardButton(
-                text=f"{get_btn_emoji('mic')} Voice Note (.ogg)",
+                text=f"{get_btn_emoji('mic')} 🎙 Voice",
                 callback_data=f"dl_voice:{platform}:{cache_hash}"
             )
         ],
         [
             InlineKeyboardButton(
-                text=f"{get_btn_emoji('studio_mic')} Audio MP3",
+                text=f"{get_btn_emoji('studio_mic')} 🎵 Audio",
                 callback_data=f"dl_audio:{platform}:{cache_hash}"
             ),
             InlineKeyboardButton(
-                text=f"{get_btn_emoji('sparkles')} 📐 Size Converter",
+                text=f"{get_btn_emoji('sparkles')} 📐 Size",
                 callback_data=f"size_menu:{platform}:{cache_hash}"
             )
         ],
         [
             InlineKeyboardButton(
-                text=f"{get_btn_emoji('trash')} Close / Delete",
+                text=f"{get_btn_emoji('trash')} 🗑 Close",
                 callback_data="cmd_close"
             )
         ]
@@ -116,19 +116,19 @@ def get_downloader_keyboard(url: str, platform: str, video_url: str, hd_url: str
 def get_size_converter_keyboard(platform: str, cache_hash: str) -> InlineKeyboardMarkup:
     kb = [
         [
-            InlineKeyboardButton(text=f"{get_btn_emoji('glowing_star')} 4K Ultra HD (2160p)", callback_data=f"size_set:2160p:{platform}:{cache_hash}"),
+            InlineKeyboardButton(text=f"{get_btn_emoji('glowing_star')} 4K (2160p)", callback_data=f"size_set:2160p:{platform}:{cache_hash}"),
             InlineKeyboardButton(text=f"{get_btn_emoji('snowflake')} 1080p Full HD", callback_data=f"size_set:1080p:{platform}:{cache_hash}")
         ],
         [
             InlineKeyboardButton(text=f"{get_btn_emoji('fire')} 720p HD", callback_data=f"size_set:720p:{platform}:{cache_hash}"),
-            InlineKeyboardButton(text=f"{get_btn_emoji('phone')} 480p SD Mobile", callback_data=f"size_set:480p:{platform}:{cache_hash}")
+            InlineKeyboardButton(text=f"{get_btn_emoji('phone')} 480p SD", callback_data=f"size_set:480p:{platform}:{cache_hash}")
         ],
         [
-            InlineKeyboardButton(text=f"{get_btn_emoji('check_box')} 1:1 Square Ratio", callback_data=f"size_set:1to1:{platform}:{cache_hash}"),
-            InlineKeyboardButton(text=f"{get_btn_emoji('selfie')} 9:16 Vertical Reel", callback_data=f"size_set:9to16:{platform}:{cache_hash}")
+            InlineKeyboardButton(text=f"{get_btn_emoji('check_box')} 1:1 Square", callback_data=f"size_set:1to1:{platform}:{cache_hash}"),
+            InlineKeyboardButton(text=f"{get_btn_emoji('selfie')} 9:16 Vertical", callback_data=f"size_set:9to16:{platform}:{cache_hash}")
         ],
         [
-            InlineKeyboardButton(text=f"{get_btn_emoji('back')} Back to Options", callback_data=f"size_back:{platform}:{cache_hash}")
+            InlineKeyboardButton(text=f"{get_btn_emoji('back')} 🔙 Back", callback_data=f"size_back:{platform}:{cache_hash}")
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=kb)
@@ -145,19 +145,11 @@ def get_main_menu_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text=f"{get_btn_emoji('glowing_star')} Snapchat", callback_data="prompt_snap"),
-            InlineKeyboardButton(text=f"{get_btn_emoji('eye')} Facebook / Meta Ads", callback_data="prompt_fb")
-        ],
-        [
-            InlineKeyboardButton(text=f"{get_btn_emoji('check_box')} 4K / Full HD Mode: ON", callback_data="mode_hd"),
-            InlineKeyboardButton(text=f"{get_btn_emoji('mic')} Voice Downloader: ON", callback_data="mode_voice")
-        ],
-        [
-            InlineKeyboardButton(text=f"{get_btn_emoji('chart_up')} Live Stats", callback_data="cmd_stats"),
-            InlineKeyboardButton(text=f"{get_btn_emoji('gear')} Emojis Manager", callback_data="cmd_emojis")
+            InlineKeyboardButton(text=f"{get_btn_emoji('eye')} Facebook Ads", callback_data="prompt_fb")
         ]
     ]
     if is_admin:
-        buttons.append([InlineKeyboardButton(text=f"{get_btn_emoji('crown')} Admin Control Panel", callback_data="cmd_admin_panel")])
+        buttons.append([InlineKeyboardButton(text=f"{get_btn_emoji('crown')} 👑 Admin Panel", callback_data="cmd_admin_panel")])
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -379,21 +371,58 @@ async def handle_admin_panel_callback(callback: CallbackQuery):
     text = (
         f"{get_p_emoji('crown')} <b>ADMIN CONTROL PANEL</b> {get_p_emoji('crown')}\n\n"
         f"Welcome Super Admin!\n\n"
-        f"<b>Admin Commands:</b>\n"
-        f"• <code>/logs</code> ── View live download logs\n"
-        f"• <code>/stats</code> ── View system statistics\n"
-        f"• <code>/grant &lt;user_id&gt;</code> ── Grant admin access\n"
-        f"• <code>/revoke &lt;user_id&gt;</code> ── Revoke access\n"
-        f"• <code>/addemoji &lt;name&gt; &lt;id&gt;</code> ── Upload custom emoji ID\n"
-        f"• <code>/broadcast</code> ── Send message to all users"
+        f"<b>Admin Control Dashboard:</b>\n"
+        f"• <code>/logs</code> ── Live Download Logs\n"
+        f"• <code>/stats</code> ── Downloader Statistics\n"
+        f"• <code>/emojis</code> ── Emojis Manager\n"
+        f"• <code>/grant &lt;id&gt;</code> | <code>/revoke &lt;id&gt;</code> ── Access Guard\n"
+        f"• <code>/broadcast</code> ── Send Announcement"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"{get_btn_emoji('chart_up')} View Stats", callback_data="cmd_stats")],
-        [InlineKeyboardButton(text=f"{get_btn_emoji('gear')} Emojis List", callback_data="cmd_emojis")],
-        [InlineKeyboardButton(text=f"{get_btn_emoji('trash')} Close Panel", callback_data="cmd_close")]
+        [
+            InlineKeyboardButton(text=f"{get_btn_emoji('chart_up')} Live Stats", callback_data="cmd_stats"),
+            InlineKeyboardButton(text=f"{get_btn_emoji('gear')} Emojis List", callback_data="cmd_emojis")
+        ],
+        [
+            InlineKeyboardButton(text=f"{get_btn_emoji('clipboard')} System Logs", callback_data="cmd_logs"),
+            InlineKeyboardButton(text=f"{get_btn_emoji('speech')} Broadcast", callback_data="cmd_broadcast_prompt")
+        ],
+        [
+            InlineKeyboardButton(text=f"{get_btn_emoji('trash')} Close Panel", callback_data="cmd_close")
+        ]
     ])
     await callback.answer()
     await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+@callback_router.callback_query(F.data == "cmd_logs")
+async def handle_logs_callback(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    if not (user_id == SUPER_ADMIN_ID or await db.is_user_authorized(user_id)):
+        return
+    logs = await db.get_recent_download_logs(limit=15)
+    text = f"{get_p_emoji('gear')} <b>RECENT SYSTEM DOWNLOAD LOGS</b>\n\n"
+    if not logs:
+        text += "<i>No logs recorded yet.</i>"
+    else:
+        for lg in logs:
+            st_icon = "✅" if lg.get("status") == "success" else "❌"
+            dt = lg.get("downloaded_at", "")[:19].replace("T", " ")
+            text += f"{st_icon} <b>[{lg.get('platform', 'media').upper()}]</b> User: <code>{lg.get('user_id')}</code> ⏱ <i>{dt}</i>\n"
+    await callback.answer()
+    await callback.message.answer(text, parse_mode="HTML")
+
+@callback_router.callback_query(F.data == "cmd_broadcast_prompt")
+async def handle_broadcast_prompt_callback(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    if user_id != SUPER_ADMIN_ID:
+        await callback.answer("⛔ Super Admin only!", show_alert=True)
+        return
+    await callback.answer()
+    await callback.message.answer(
+        f"{get_p_emoji('speech')} <b>BROADCAST ANNOUNCEMENT</b>\n\n"
+        f"Reply to any message with <code>/broadcast</code> or send <code>/broadcast &lt;text&gt;</code> to notify all users.",
+        parse_mode="HTML"
+    )
 
 @callback_router.callback_query(F.data.startswith("dl_"))
 async def handle_download_callbacks(callback: CallbackQuery, bot: Bot):
