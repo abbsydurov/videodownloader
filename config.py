@@ -1,6 +1,7 @@
 import os
 import sys
 import logging
+from typing import Optional
 
 if sys.platform == "win32":
     try:
@@ -113,6 +114,12 @@ def get_btn_emoji(name: str) -> str:
     if name in PREMIUM_EMOJIS_CACHE:
         return PREMIUM_EMOJIS_CACHE[name][0]
     return DEFAULT_PREMIUM_EMOJIS.get(name, ("✨", ""))[0]
+
+def get_btn_emoji_id(name: str) -> Optional[str]:
+    """Returns custom emoji ID for InlineKeyboardButton icon_custom_emoji_id parameter."""
+    if name in PREMIUM_EMOJIS_CACHE:
+        return PREMIUM_EMOJIS_CACHE[name][1] or None
+    return DEFAULT_PREMIUM_EMOJIS.get(name, ("✨", ""))[1] or None
 
 def update_emoji_cache(name: str, char: str, emoji_id: str):
     PREMIUM_EMOJIS_CACHE[name] = (char, str(emoji_id))
