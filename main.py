@@ -54,33 +54,39 @@ emoji_router = Router(name="emoji_handler")
 admin_router = Router(name="admin_handler")
 inline_router = Router(name="inline_handler")
 
-HELP_GUIDE_TEXT = (
-    "★ <b><u>Sᴏᴄɪᴀʟ Mᴇᴅɪᴀ Vɪᴅᴇᴏ Dᴏᴡɴʟᴏᴀᴅᴇʀ Bᴏᴛ</u></b> ★\n\n"
+USER_HELP_GUIDE = (
+    "★ <b><u>Sᴏᴄɪᴀʟ Mᴇᴅɪᴀ Vɪᴅᴇᴏ Dᴏᴡɴʟᴏᴀᴅᴇʀ Gᴜɪᴅᴇ</u></b> ★\n\n"
     "✨ <b>Sᴜᴘᴘᴏʀᴛᴇᴅ Pʟᴀᴛғᴏʀᴍs:</b>\n"
     "• 📸 <b>Instagram</b> ── <i>Reels, Posts, IGTV, Stories</i>\n"
     "• 📌 <b>Pinterest</b> ── <i>Pins & Video clips</i>\n"
     "• 👻 <b>Snapchat</b> ── <i>Spotlight & Stories</i>\n"
     "• 📘 <b>Facebook</b> ── <i>Reels, Videos & Meta Ads</i>\n\n"
-    "⚡️ <b>Fᴇᴀᴛᴜʀᴇs:</b>\n"
-    "• 🎬 <b>Full HD / 4K Quality</b> downloading\n"
-    "• 🎙 <b>Voice Downloader</b> (Convert video to Voice Note / MP3)\n"
-    "• 📦 <b>Multi-Downloading Queue</b> (Send multiple links together)\n"
-    "• 🔎 <b>Inline Query Mode</b> (Type <code>@botusername &lt;link&gt;</code> in any chat)\n\n"
-    "★ <b>Cᴏᴍᴍᴀɴᴅs:</b>\n"
-    "• /start ── <i>Main Menu & Control Dashboard</i>\n"
-    "• /help ── <i>Usage Guide & Instructions</i>\n"
-    "• /stats ── <i>Live Platform Download Statistics</i>\n"
-    "• /emojis ── <i>View & Manage Custom Emoji IDs</i>\n"
-    "• /logs ── <i>View Recent System & Download Logs</i> (Admin)"
+    "⚡️ <b>Hᴏᴡ Tᴏ Dᴏᴡɴʟᴏᴀᴅ:</b>\n"
+    "1️⃣ Send any social media video link directly to the bot.\n"
+    "2️⃣ Select <b>Download Video</b> or <b>Voice Note (.ogg)</b>.\n"
+    "3️⃣ Use <b>📐 Size Converter</b> to change video resolution & format!\n\n"
+    "📦 <b>Mᴜʟᴛɪ-Dᴏᴡɴʟᴏᴀᴅɪɴɢ:</b> Paste multiple video links together in one message!\n"
+    "🔎 <b>Iɴʟɪɴᴇ Sᴇᴀʀᴄʜ Mᴏᴅᴇ:</b> Type <code>@botusername &lt;link&gt;</code> in any Telegram chat."
 )
 
-# Helper function to generate clean inline keyboards
+ADMIN_HELP_GUIDE = (
+    "★ <b><u>👑 Aᴅᴍɪɴ Cᴏɴᴛʀᴏʟ Gᴜɪᴅᴇ</u></b> ★\n\n"
+    "• <code>/stats</code> ── <i>Live platform download statistics & user counts</i>\n"
+    "• <code>/logs</code> ── <i>View recent system download logs from MongoDB</i>\n"
+    "• <code>/grant &lt;user_id&gt;</code> ── <i>Grant admin authorization</i>\n"
+    "• <code>/revoke &lt;user_id&gt;</code> ── <i>Revoke admin access</i>\n"
+    "• <code>/addemoji &lt;name&gt; &lt;id&gt;</code> ── <i>Upload custom premium emoji ID</i>\n"
+    "• <code>/emojis</code> ── <i>View all saved custom emoji IDs</i>\n"
+    "• <code>/broadcast</code> ── <i>Send announcement to all registered users</i>"
+)
+
+# Helper function to generate clean inline keyboards with custom emojis
 def get_downloader_keyboard(url: str, platform: str, video_url: str, hd_url: str = None) -> InlineKeyboardMarkup:
     cache_hash = str(hash(url) % 1000000)
     kb = [
         [
             InlineKeyboardButton(
-                text=f"{get_btn_emoji('fire')} Download Video (Original)",
+                text=f"{get_btn_emoji('fire')} Download Video (Original Size)",
                 callback_data=f"dl_vid:{platform}:{cache_hash}"
             ),
             InlineKeyboardButton(
@@ -184,7 +190,13 @@ async def command_start_handler(message: Message, bot: Bot):
 
 @start_router.message(Command("help"))
 async def command_help_handler(message: Message):
-    await message.answer(HELP_GUIDE_TEXT, parse_mode="HTML")
+    user_id = message.from_user.id if message.from_user else 0
+    is_admin = (user_id == SUPER_ADMIN_ID or await db.is_user_authorized(user_id))
+    if is_admin:
+        text = f"{USER_HELP_GUIDE}\n\n{ADMIN_HELP_GUIDE}"
+    else:
+        text = USER_HELP_GUIDE
+    await message.answer(text, parse_mode="HTML")
 
 @start_router.message(Command("stats"))
 async def command_stats_handler(message: Message):
@@ -238,6 +250,10 @@ async def process_media_urls(message: Message, bot: Bot):
             video_url = res.get("video_url")
             hd_url = res.get("hd_url", video_url)
             title = res.get("title", f"{platform.title()} Video")
+            width = res.get("width")
+            height = res.get("height")
+            duration = res.get("duration", 0)
+
             cache_key = f"{platform}:{hash(url) % 1000000}"
             
             DOWNLOAD_CACHE[cache_key] = {
@@ -246,24 +262,35 @@ async def process_media_urls(message: Message, bot: Bot):
                 "video_url": video_url,
                 "hd_url": hd_url,
                 "title": title,
-                "thumbnail": res.get("thumbnail")
+                "thumbnail": res.get("thumbnail"),
+                "width": width,
+                "height": height,
+                "duration": duration
             }
 
             keyboard = get_downloader_keyboard(url, platform, video_url, hd_url)
             caption = (
                 f"{get_p_emoji('check_mark')} <b>Video Downloaded Successfully!</b>\n\n"
                 f"• 🌐 <b>Platform:</b> {platform.title()}\n"
-                f"• 📺 <b>Quality:</b> Original Aspect Ratio / Full HD\n"
+                f"• 📺 <b>Quality:</b> Original Resolution (Exact Size)\n"
                 f"• ⚡️ <b>Status:</b> Complete"
             )
 
+            video_kwargs = {
+                "video": URLInputFile(video_url),
+                "caption": caption,
+                "reply_markup": keyboard,
+                "parse_mode": "HTML",
+                "supports_streaming": True
+            }
+            if width and height:
+                video_kwargs["width"] = int(width)
+                video_kwargs["height"] = int(height)
+            if duration:
+                video_kwargs["duration"] = int(duration)
+
             try:
-                await message.answer_video(
-                    video=URLInputFile(video_url),
-                    caption=caption,
-                    reply_markup=keyboard,
-                    parse_mode="HTML"
-                )
+                await message.answer_video(**video_kwargs)
                 await status_msg.delete()
             except Exception as e:
                 logger.warning(f"Direct video send failed, sending download options: {e}")
@@ -302,21 +329,21 @@ async def process_media_urls(message: Message, bot: Bot):
 
 # ==================== CALLBACK ROUTER ====================
 @callback_router.callback_query(F.data.startswith("prompt_") | F.data.startswith("info_"))
-async def handle_platform_prompt(callback: CallbackQuery):
+async def handle_platform_prompt(callback: CallbackQuery, bot: Bot):
     platform_key = callback.data.split("_")[1]
     prompt_map = {
-        "insta": ("📸 Instagram Video Downloader", "Send your Instagram Reel, Post, IGTV, or Story link below!"),
-        "pin": ("📌 Pinterest Video Downloader", "Send your Pinterest Pin or Video clip link below!"),
-        "snap": ("👻 Snapchat Video Downloader", "Send your Snapchat Spotlight or Story link below!"),
-        "fb": ("📘 Facebook & Meta Ads Downloader", "Send your Facebook Reel, Watch Video, or Meta Ads link below!")
+        "insta": ("📸 Instagram Video Downloader", "Please send your Instagram Reel, Post, IGTV, or Story video link/URL below!"),
+        "pin": ("📌 Pinterest Video Downloader", "Please send your Pinterest Pin or Video clip link/URL below!"),
+        "snap": ("👻 Snapchat Video Downloader", "Please send your Snapchat Spotlight or Story video link/URL below!"),
+        "fb": ("📘 Facebook & Meta Ads Downloader", "Please send your Facebook Reel, Watch Video, or Meta Ads video link/URL below!")
     }
-    title, desc = prompt_map.get(platform_key, ("Social Media Downloader", "Send your video link below!"))
+    title, desc = prompt_map.get(platform_key, ("Social Media Downloader", "Please send your video link/URL below!"))
     text = (
         f"{get_p_emoji('fire')} <b>{title}</b> {get_p_emoji('fire')}\n\n"
-        f"• {desc}\n\n"
-        f"<i>💡 You can also paste any social media video link directly anytime without selecting!</i>"
+        f"• {get_p_emoji('mic')} <b>Instruction:</b> {desc}\n\n"
+        f"{get_p_emoji('sparkles')} <i>Send video link/URL ── Voice Note & Full HD / 4K Video will be generated automatically!</i>"
     )
-    await callback.answer()
+    await callback.answer("📥 Send your video link/URL below!", show_alert=False)
     await callback.message.answer(text, parse_mode="HTML")
 
 @callback_router.callback_query(F.data.startswith("mode_"))
@@ -384,7 +411,7 @@ async def handle_download_callbacks(callback: CallbackQuery, bot: Bot):
             try:
                 await callback.message.answer_video(
                     video=URLInputFile(cached_item["video_url"]),
-                    caption=f"{get_p_emoji('check_mark')} <b>Downloaded in Full HD / 4K!</b>\n\n{cached_item['title']}",
+                    caption=f"{get_p_emoji('check_mark')} <b>Downloaded in Full HD / 4K!</b>",
                     parse_mode="HTML"
                 )
             except Exception as e:
@@ -407,13 +434,13 @@ async def handle_download_callbacks(callback: CallbackQuery, bot: Bot):
                     if action == "dl_voice":
                         await callback.message.answer_voice(
                             voice=types.FSInputFile(temp_file),
-                            caption=f"{get_p_emoji('mic')} <b>Voice Note Extracted!</b>\n{cached_item['title']}",
+                            caption=f"{get_p_emoji('mic')} <b>Voice Note Extracted!</b>",
                             parse_mode="HTML"
                         )
                     else:
                         await callback.message.answer_audio(
                             audio=types.FSInputFile(temp_file),
-                            title=cached_item['title'],
+                            title=cached_item.get('title', 'Audio'),
                             caption=f"{get_p_emoji('studio_mic')} <b>Audio Extracted!</b>",
                             parse_mode="HTML"
                         )
