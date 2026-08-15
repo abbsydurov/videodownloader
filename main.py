@@ -22,7 +22,7 @@ from aiogram.exceptions import TelegramAPIError
 
 from config import (
     BOT_TOKEN, SUPER_ADMIN_ID, LOG_CHANNEL_ID, WELCOME_IMAGE,
-    get_p_emoji, logger
+    get_p_emoji, get_btn_emoji, logger
 )
 import database as db
 import downloader
@@ -79,27 +79,27 @@ def get_downloader_keyboard(url: str, platform: str, video_url: str, hd_url: str
     kb = [
         [
             InlineKeyboardButton(
-                text=f"{get_p_emoji('fire')} Full HD / 4K Video",
+                text=f"{get_btn_emoji('fire')} Full HD / 4K Video",
                 callback_data=f"dl_vid:{platform}:{hash(url) % 1000000}"
             ),
             InlineKeyboardButton(
-                text=f"{get_p_emoji('mic')} Voice Note (.ogg)",
+                text=f"{get_btn_emoji('mic')} Voice Note (.ogg)",
                 callback_data=f"dl_voice:{platform}:{hash(url) % 1000000}"
             )
         ],
         [
             InlineKeyboardButton(
-                text=f"{get_p_emoji('studio_mic')} Audio MP3",
+                text=f"{get_btn_emoji('studio_mic')} Audio MP3",
                 callback_data=f"dl_audio:{platform}:{hash(url) % 1000000}"
             ),
             InlineKeyboardButton(
-                text=f"{get_p_emoji('sparkles')} Quality Options",
+                text=f"{get_btn_emoji('sparkles')} Quality Options",
                 callback_data=f"dl_qual:{platform}"
             )
         ],
         [
             InlineKeyboardButton(
-                text=f"{get_p_emoji('trash')} Close / Delete",
+                text=f"{get_btn_emoji('trash')} Close / Delete",
                 callback_data="cmd_close"
             )
         ]
@@ -113,24 +113,24 @@ DOWNLOAD_CACHE: Dict[str, Dict[str, Any]] = {}
 def get_main_menu_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
     buttons = [
         [
-            InlineKeyboardButton(text=f"{get_p_emoji('fire')} Instagram API", callback_data="info_insta"),
-            InlineKeyboardButton(text=f"{get_p_emoji('zap')} Pinterest API", callback_data="info_pin")
+            InlineKeyboardButton(text=f"{get_btn_emoji('fire')} Instagram API", callback_data="info_insta"),
+            InlineKeyboardButton(text=f"{get_btn_emoji('zap')} Pinterest API", callback_data="info_pin")
         ],
         [
-            InlineKeyboardButton(text=f"{get_p_emoji('glowing_star')} Snapchat API", callback_data="info_snap"),
-            InlineKeyboardButton(text=f"{get_p_emoji('eye')} Facebook Ads API", callback_data="info_fb")
+            InlineKeyboardButton(text=f"{get_btn_emoji('glowing_star')} Snapchat API", callback_data="info_snap"),
+            InlineKeyboardButton(text=f"{get_btn_emoji('eye')} Facebook Ads API", callback_data="info_fb")
         ],
         [
-            InlineKeyboardButton(text=f"{get_p_emoji('check_box')} 4K / Full HD Mode: ON", callback_data="mode_hd"),
-            InlineKeyboardButton(text=f"{get_p_emoji('mic')} Voice Downloader: ON", callback_data="mode_voice")
+            InlineKeyboardButton(text=f"{get_btn_emoji('check_box')} 4K / Full HD Mode: ON", callback_data="mode_hd"),
+            InlineKeyboardButton(text=f"{get_btn_emoji('mic')} Voice Downloader: ON", callback_data="mode_voice")
         ],
         [
-            InlineKeyboardButton(text=f"{get_p_emoji('chart_up')} Live Stats", callback_data="cmd_stats"),
-            InlineKeyboardButton(text=f"{get_p_emoji('gear')} Emojis Manager", callback_data="cmd_emojis")
+            InlineKeyboardButton(text=f"{get_btn_emoji('chart_up')} Live Stats", callback_data="cmd_stats"),
+            InlineKeyboardButton(text=f"{get_btn_emoji('gear')} Emojis Manager", callback_data="cmd_emojis")
         ]
     ]
     if is_admin:
-        buttons.append([InlineKeyboardButton(text=f"{get_p_emoji('crown')} Admin Control Panel", callback_data="cmd_admin_panel")])
+        buttons.append([InlineKeyboardButton(text=f"{get_btn_emoji('crown')} Admin Control Panel", callback_data="cmd_admin_panel")])
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -335,9 +335,9 @@ async def handle_admin_panel_callback(callback: CallbackQuery):
         f"• <code>/broadcast</code> ── Send message to all users"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"{get_p_emoji('chart_up')} View Stats", callback_data="cmd_stats")],
-        [InlineKeyboardButton(text=f"{get_p_emoji('gear')} Emojis List", callback_data="cmd_emojis")],
-        [InlineKeyboardButton(text=f"{get_p_emoji('trash')} Close Panel", callback_data="cmd_close")]
+        [InlineKeyboardButton(text=f"{get_btn_emoji('chart_up')} View Stats", callback_data="cmd_stats")],
+        [InlineKeyboardButton(text=f"{get_btn_emoji('gear')} Emojis List", callback_data="cmd_emojis")],
+        [InlineKeyboardButton(text=f"{get_btn_emoji('trash')} Close Panel", callback_data="cmd_close")]
     ])
     await callback.answer()
     await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
