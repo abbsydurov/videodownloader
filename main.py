@@ -21,11 +21,16 @@ from aiogram.types import (
 from aiogram.exceptions import TelegramAPIError
 
 from config import (
-    BOT_TOKEN, SUPER_ADMIN_ID, LOG_CHANNEL_ID, WELCOME_IMAGE,
+    BOT_TOKEN, SUPER_ADMIN_ID, SUPER_ADMIN_IDS, LOG_CHANNEL_ID, WELCOME_IMAGE,
     get_p_emoji, get_btn_emoji, get_btn_emoji_id, logger
 )
 import database as db
 import downloader
+
+async def is_admin_user(user_id: int) -> bool:
+    if user_id in SUPER_ADMIN_IDS:
+        return True
+    return await db.is_user_authorized(user_id)
 
 # Middleware for registering user activity on every incoming update
 class UserActivityMiddleware(BaseMiddleware):
@@ -161,7 +166,7 @@ async def command_start_handler(message: Message, bot: Bot):
     if not user:
         return
 
-    is_admin = (user.id == SUPER_ADMIN_ID or await db.is_user_authorized(user.id))
+    is_admin = await is_admin_user(user.id)
     bot_info = await bot.get_me()
     keyboard = get_main_menu_keyboard(is_admin=is_admin)
 
@@ -185,7 +190,7 @@ async def command_start_handler(message: Message, bot: Bot):
 @start_router.message(Command("help"))
 async def command_help_handler(message: Message):
     user_id = message.from_user.id if message.from_user else 0
-    is_admin = (user_id == SUPER_ADMIN_ID or await db.is_user_authorized(user_id))
+    is_admin = await is_admin_user(user_id)
     if is_admin:
         text = f"{USER_HELP_GUIDE}\n\n{ADMIN_HELP_GUIDE}"
     else:
@@ -378,7 +383,7 @@ async def handle_emojis_menu_callback(callback: CallbackQuery):
 @callback_router.callback_query(F.data == "cmd_admin_panel")
 async def handle_admin_panel_callback(callback: CallbackQuery):
     user_id = callback.from_user.id
-    if not (user_id == SUPER_ADMIN_ID or await db.is_user_authorized(user_id)):
+    if not await is_admin_user(user_id):
         await callback.answer("⛔ Admin Access Required!", show_alert=True)
         return
 
@@ -411,7 +416,7 @@ async def handle_admin_panel_callback(callback: CallbackQuery):
 @callback_router.callback_query(F.data == "cmd_logs")
 async def handle_logs_callback(callback: CallbackQuery):
     user_id = callback.from_user.id
-    if not (user_id == SUPER_ADMIN_ID or await db.is_user_authorized(user_id)):
+    if not await is_admin_user(user_id):
         return
     logs = await db.get_recent_download_logs(limit=15)
     text = f"{get_p_emoji('gear')} <b>RECENT SYSTEM DOWNLOAD LOGS</b>\n\n"
@@ -428,8 +433,8 @@ async def handle_logs_callback(callback: CallbackQuery):
 @callback_router.callback_query(F.data == "cmd_broadcast_prompt")
 async def handle_broadcast_prompt_callback(callback: CallbackQuery):
     user_id = callback.from_user.id
-    if user_id != SUPER_ADMIN_ID:
-        await callback.answer("⛔ Super Admin only!", show_alert=True)
+    if not await is_admin_user(user_id):
+        await callback.answer("⛔ Admin Access Required!", show_alert=True)
         return
     await callback.answer()
     await callback.message.answer(
@@ -579,7 +584,7 @@ async def handle_stats_callback(callback: CallbackQuery):
 @emoji_router.message(Command("saveemoji"))
 async def command_add_emoji(message: Message):
     user_id = message.from_user.id
-    if not (user_id == SUPER_ADMIN_ID or await db.is_user_authorized(user_id)):
+    if not await is_admin_user(user_id):
         await message.answer("⛔ Only authorized admins can manage premium custom emoji IDs.")
         return
 
@@ -628,7 +633,7 @@ async def command_list_emojis(message: Message):
 @emoji_router.message(Command("delemoji"))
 async def command_delete_emoji(message: Message):
     user_id = message.from_user.id
-    if not (user_id == SUPER_ADMIN_ID or await db.is_user_authorized(user_id)):
+    if not await is_admin_user(user_id):
         return
 
     parts = message.text.split()
@@ -647,7 +652,7 @@ async def command_delete_emoji(message: Message):
 @admin_router.message(Command("logs"))
 async def command_logs_handler(message: Message):
     user_id = message.from_user.id
-    if not (user_id == SUPER_ADMIN_ID or await db.is_user_authorized(user_id)):
+    if not await is_admin_user(user_id):
         return
 
     logs = await db.get_recent_download_logs(limit=20)
@@ -668,7 +673,7 @@ async def command_logs_handler(message: Message):
 
 @admin_router.message(Command("grant"))
 async def command_grant_user(message: Message):
-    if message.from_user.id != SUPER_ADMIN_ID:
+    if message.from_user.id not in SUPER_ADMIN_IDS:
         return
     parts = message.text.split()
     if len(parts) < 2 or not parts[1].isdigit():
@@ -680,7 +685,7 @@ async def command_grant_user(message: Message):
 
 @admin_router.message(Command("revoke"))
 async def command_revoke_user(message: Message):
-    if message.from_user.id != SUPER_ADMIN_ID:
+    if message.from_user.id not in SUPER_ADMIN_IDS:
         return
     parts = message.text.split()
     if len(parts) < 2 or not parts[1].isdigit():
@@ -692,7 +697,7 @@ async def command_revoke_user(message: Message):
 
 @admin_router.message(Command("broadcast"))
 async def command_broadcast(message: Message, bot: Bot):
-    if message.from_user.id != SUPER_ADMIN_ID:
+    if not await is_admin_user(message.from_user.id):
         return
 
     if not message.reply_to_message and len(message.text.split()) < 2:
