@@ -80,34 +80,39 @@ ADMIN_HELP_GUIDE = (
     "• <code>/broadcast</code> ── <i>Send announcement to all registered users</i>"
 )
 
-# Helper function to generate clean compact inline keyboards
+# Helper function to generate clean compact inline keyboards with official Telegram button styles
 def get_downloader_keyboard(url: str, platform: str, video_url: str, hd_url: str = None) -> InlineKeyboardMarkup:
     cache_hash = str(hash(url) % 1000000)
     kb = [
         [
             InlineKeyboardButton(
-                text=f"{get_btn_emoji('fire')} 🎬 Video",
-                callback_data=f"dl_vid:{platform}:{cache_hash}"
+                text=f"{get_btn_emoji('fire')} 🎬 Video (Original 4K)",
+                callback_data=f"dl_vid:{platform}:{cache_hash}",
+                style="success"
             ),
             InlineKeyboardButton(
-                text=f"{get_btn_emoji('mic')} 🎙 Voice",
-                callback_data=f"dl_voice:{platform}:{cache_hash}"
+                text=f"{get_btn_emoji('mic')} 🎙 Voice Note",
+                callback_data=f"dl_voice:{platform}:{cache_hash}",
+                style="primary"
             )
         ],
         [
             InlineKeyboardButton(
-                text=f"{get_btn_emoji('studio_mic')} 🎵 Audio",
-                callback_data=f"dl_audio:{platform}:{cache_hash}"
+                text=f"{get_btn_emoji('studio_mic')} 🎵 Audio MP3",
+                callback_data=f"dl_audio:{platform}:{cache_hash}",
+                style="primary"
             ),
             InlineKeyboardButton(
-                text=f"{get_btn_emoji('sparkles')} 📐 Size",
-                callback_data=f"size_menu:{platform}:{cache_hash}"
+                text=f"{get_btn_emoji('sparkles')} 📐 Size Converter",
+                callback_data=f"size_menu:{platform}:{cache_hash}",
+                style="primary"
             )
         ],
         [
             InlineKeyboardButton(
                 text=f"{get_btn_emoji('trash')} 🗑 Close",
-                callback_data="cmd_close"
+                callback_data="cmd_close",
+                style="danger"
             )
         ]
     ]
@@ -116,19 +121,19 @@ def get_downloader_keyboard(url: str, platform: str, video_url: str, hd_url: str
 def get_size_converter_keyboard(platform: str, cache_hash: str) -> InlineKeyboardMarkup:
     kb = [
         [
-            InlineKeyboardButton(text=f"{get_btn_emoji('glowing_star')} 4K (2160p)", callback_data=f"size_set:2160p:{platform}:{cache_hash}"),
-            InlineKeyboardButton(text=f"{get_btn_emoji('snowflake')} 1080p Full HD", callback_data=f"size_set:1080p:{platform}:{cache_hash}")
+            InlineKeyboardButton(text=f"{get_btn_emoji('glowing_star')} 🌟 4K (2160p)", callback_data=f"size_set:2160p:{platform}:{cache_hash}", style="success"),
+            InlineKeyboardButton(text=f"{get_btn_emoji('snowflake')} 📺 1080p Full HD", callback_data=f"size_set:1080p:{platform}:{cache_hash}", style="primary")
         ],
         [
-            InlineKeyboardButton(text=f"{get_btn_emoji('fire')} 720p HD", callback_data=f"size_set:720p:{platform}:{cache_hash}"),
-            InlineKeyboardButton(text=f"{get_btn_emoji('phone')} 480p SD", callback_data=f"size_set:480p:{platform}:{cache_hash}")
+            InlineKeyboardButton(text=f"{get_btn_emoji('fire')} 🔥 720p HD", callback_data=f"size_set:720p:{platform}:{cache_hash}", style="primary"),
+            InlineKeyboardButton(text=f"{get_btn_emoji('phone')} 📱 480p SD", callback_data=f"size_set:480p:{platform}:{cache_hash}")
         ],
         [
-            InlineKeyboardButton(text=f"{get_btn_emoji('check_box')} 1:1 Square", callback_data=f"size_set:1to1:{platform}:{cache_hash}"),
-            InlineKeyboardButton(text=f"{get_btn_emoji('selfie')} 9:16 Vertical", callback_data=f"size_set:9to16:{platform}:{cache_hash}")
+            InlineKeyboardButton(text=f"{get_btn_emoji('check_box')} 📐 1:1 Square", callback_data=f"size_set:1to1:{platform}:{cache_hash}"),
+            InlineKeyboardButton(text=f"{get_btn_emoji('selfie')} 📱 9:16 Vertical", callback_data=f"size_set:9to16:{platform}:{cache_hash}")
         ],
         [
-            InlineKeyboardButton(text=f"{get_btn_emoji('back')} 🔙 Back", callback_data=f"size_back:{platform}:{cache_hash}")
+            InlineKeyboardButton(text=f"{get_btn_emoji('back')} 🔙 Back", callback_data=f"size_back:{platform}:{cache_hash}", style="danger")
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=kb)
@@ -140,16 +145,19 @@ DOWNLOAD_CACHE: Dict[str, Dict[str, Any]] = {}
 def get_main_menu_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
     buttons = [
         [
-            InlineKeyboardButton(text=f"{get_btn_emoji('fire')} Instagram", callback_data="prompt_insta"),
-            InlineKeyboardButton(text=f"{get_btn_emoji('zap')} Pinterest", callback_data="prompt_pin")
+            InlineKeyboardButton(text=f"{get_btn_emoji('fire')} Instagram", callback_data="prompt_insta", style="primary"),
+            InlineKeyboardButton(text=f"{get_btn_emoji('zap')} Pinterest", callback_data="prompt_pin", style="primary")
         ],
         [
-            InlineKeyboardButton(text=f"{get_btn_emoji('glowing_star')} Snapchat", callback_data="prompt_snap"),
-            InlineKeyboardButton(text=f"{get_btn_emoji('eye')} Facebook Ads", callback_data="prompt_fb")
+            InlineKeyboardButton(text=f"{get_btn_emoji('glowing_star')} Snapchat", callback_data="prompt_snap", style="primary"),
+            InlineKeyboardButton(text=f"{get_btn_emoji('eye')} Facebook Ads", callback_data="prompt_fb", style="primary")
+        ],
+        [
+            InlineKeyboardButton(text=f"{get_btn_emoji('mic')} 🎙 Voice Guide / Instructions", callback_data="cmd_voice_guide", style="success")
         ]
     ]
     if is_admin:
-        buttons.append([InlineKeyboardButton(text=f"{get_btn_emoji('crown')} 👑 Admin Panel", callback_data="cmd_admin_panel")])
+        buttons.append([InlineKeyboardButton(text=f"{get_btn_emoji('crown')} 👑 Admin Panel", callback_data="cmd_admin_panel", style="danger")])
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -336,6 +344,18 @@ async def handle_platform_prompt(callback: CallbackQuery, bot: Bot):
         f"{get_p_emoji('sparkles')} <i>Send video link/URL ── Voice Note & Full HD / 4K Video will be generated automatically!</i>"
     )
     await callback.answer("📥 Send your video link/URL below!", show_alert=False)
+    await callback.message.answer(text, parse_mode="HTML")
+
+@callback_router.callback_query(F.data == "cmd_voice_guide")
+async def handle_voice_guide_callback(callback: CallbackQuery):
+    text = (
+        f"{get_p_emoji('mic')} <b>VOICE & USAGE INSTRUCTION GUIDE</b> {get_p_emoji('mic')}\n\n"
+        f"• <b>How to download:</b> Simply copy any video link from Instagram, Pinterest, Snapchat, or Facebook and send it directly in this chat!\n\n"
+        f"• <b>Automatic 4K & Full HD:</b> Videos are automatically delivered in maximum 4K / 1080p resolution in exact original size & uncropped aspect ratio.\n\n"
+        f"• <b>Voice Note & Audio MP3:</b> Click 'Voice Note' or 'Audio MP3' on any downloaded video card to generate audio format instantly!\n\n"
+        f"• <b>Size Converter:</b> Use the 'Size Converter' button on any video result card to convert to 4K, 1080p, 720p, 480p, 1:1 Square, or 9:16 Vertical format."
+    )
+    await callback.answer("🎙 Voice Guide sent below!", show_alert=False)
     await callback.message.answer(text, parse_mode="HTML")
 
 @callback_router.callback_query(F.data.startswith("mode_"))
