@@ -100,12 +100,18 @@ DEFAULT_PREMIUM_EMOJIS = {
 PREMIUM_EMOJIS_CACHE = dict(DEFAULT_PREMIUM_EMOJIS)
 
 def get_p_emoji(name: str) -> str:
-    """Returns HTML tg-emoji tag if available, else plain unicode emoji."""
+    """Returns HTML tg-emoji tag if available, else plain unicode emoji (for HTML messages/captions)."""
     if name in PREMIUM_EMOJIS_CACHE:
         char, custom_id = PREMIUM_EMOJIS_CACHE[name]
         if custom_id:
             return f'<tg-emoji emoji-id="{custom_id}">{char}</tg-emoji>'
         return char
+    return DEFAULT_PREMIUM_EMOJIS.get(name, ("✨", ""))[0]
+
+def get_btn_emoji(name: str) -> str:
+    """Returns clean unicode emoji character for Inline Keyboard buttons (since buttons do not support HTML tags)."""
+    if name in PREMIUM_EMOJIS_CACHE:
+        return PREMIUM_EMOJIS_CACHE[name][0]
     return DEFAULT_PREMIUM_EMOJIS.get(name, ("✨", ""))[0]
 
 def update_emoji_cache(name: str, char: str, emoji_id: str):
