@@ -270,13 +270,13 @@ async def convert_video_media(
 
         # Robust scaling filters guaranteeing even pixel dimensions (yuv420p compliant)
         filter_map = {
-            "2160p": "scale=trunc(iw*min(3840/iw\,2160/ih)/2)*2:trunc(ih*min(3840/iw\,2160/ih)/2)*2,setsar=1",
-            "1080p": "scale=trunc(iw*min(1920/iw\,1080/ih)/2)*2:trunc(ih*min(1920/iw\,1080/ih)/2)*2,setsar=1",
-            "720p": "scale=trunc(iw*min(1280/iw\,720/ih)/2)*2:trunc(ih*min(1280/iw\,720/ih)/2)*2,setsar=1",
-            "480p": "scale=trunc(iw*min(854/iw\,480/ih)/2)*2:trunc(ih*min(854/iw\,480/ih)/2)*2,setsar=1",
-            "1to1": "scale=1080:1080:force_original_aspect_ratio=decrease,pad=1080:1080:(ow-iw)/2:(oh-ih)/2:black,setsar=1",
-            "9to16": "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,setsar=1",
-            "compress": "scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1"
+            "2160p": r"scale=trunc(iw*min(3840/iw,2160/ih)/2)*2:trunc(ih*min(3840/iw,2160/ih)/2)*2,setsar=1",
+            "1080p": r"scale=trunc(iw*min(1920/iw,1080/ih)/2)*2:trunc(ih*min(1920/iw,1080/ih)/2)*2,setsar=1",
+            "720p": r"scale=trunc(iw*min(1280/iw,720/ih)/2)*2:trunc(ih*min(1280/iw,720/ih)/2)*2,setsar=1",
+            "480p": r"scale=trunc(iw*min(854/iw,480/ih)/2)*2:trunc(ih*min(854/iw,480/ih)/2)*2,setsar=1",
+            "1to1": r"scale=1080:1080:force_original_aspect_ratio=decrease,pad=1080:1080:(ow-iw)/2:(oh-ih)/2:black,setsar=1",
+            "9to16": r"scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,setsar=1",
+            "compress": r"scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1"
         }
 
         vf_str = filter_map.get(target_mode, "scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1")
