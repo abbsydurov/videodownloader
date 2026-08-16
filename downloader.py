@@ -2,6 +2,7 @@ import asyncio
 import re
 import os
 import sys
+import time
 import shutil
 import tempfile
 import logging
@@ -113,12 +114,11 @@ async def direct_facebook_scraper(url: str) -> Optional[Dict[str, Any]]:
                 if resp.status == 200:
                     html = await resp.text()
 
-                    # 1. Search for HD playable URL
+                    # Search for HD or SD playable URLs
                     hd_match = re.search(r'"playable_url_quality_hd"\s*:\s*"([^"]+)"', html) or \
                                re.search(r'"browser_native_hd_url"\s*:\s*"([^"]+)"', html) or \
                                re.search(r'hd_src\s*:\s*"([^"]+)"', html)
                     
-                    # 2. Search for SD playable URL
                     sd_match = re.search(r'"playable_url"\s*:\s*"([^"]+)"', html) or \
                                re.search(r'"browser_native_sd_url"\s*:\s*"([^"]+)"', html) or \
                                re.search(r'sd_src\s*:\s*"([^"]+)"', html)
@@ -128,7 +128,6 @@ async def direct_facebook_scraper(url: str) -> Optional[Dict[str, Any]]:
                     chosen_url = hd_url or sd_url
 
                     if chosen_url and chosen_url.startswith("http"):
-                        # Extract title
                         title_match = re.search(r'<title>([^<]+)</title>', html)
                         title = title_match.group(1).replace(" | Facebook", "") if title_match else "Facebook Video"
 
@@ -207,7 +206,7 @@ async def fallback_ytdlp_downloader(url: str, download_file: bool = True) -> Opt
             import yt_dlp
             
             temp_dir = tempfile.gettempdir()
-            out_template = os.path.join(temp_dir, f"ytdl_%(id)s_{int(asyncio.get_event_loop().time())}.%(ext)s")
+            out_template = os.path.join(temp_dir, f"ytdl_%(id)s_{int(time.time())}.%(ext)s")
             
             ydl_opts = {
                 'quiet': True,
@@ -327,13 +326,13 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
 
     temp_dir = tempfile.gettempdir()
 
-    # 1. For Facebook: Try Direct Scraper First (fastest & handles Reels, Watch & Posts)
+    # 1. For Facebook: Try Direct Scraper First
     if platform == "facebook":
         fb_res = await direct_facebook_scraper(expanded_url)
         if fb_res and fb_res.get("video_url"):
-            raw_target = os.path.join(temp_dir, f"fb_raw_{int(asyncio.get_event_loop().time())}.mp4")
+            raw_target = os.path.join(temp_dir, f"fb_raw_{int(time.time())}.mp4")
             if await download_url_to_file(fb_res["video_url"], raw_target):
-                play_target = os.path.join(temp_dir, f"fb_play_{int(asyncio.get_event_loop().time())}.mp4")
+                play_target = os.path.join(temp_dir, f"fb_play_{int(time.time())}.mp4")
                 if await ensure_playable_video(raw_target, play_target):
                     try: os.remove(raw_target)
                     except Exception: pass
@@ -347,9 +346,9 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
     if platform == "pinterest":
         pin_res = await direct_pinterest_scraper(expanded_url)
         if pin_res and pin_res.get("video_url"):
-            raw_target = os.path.join(temp_dir, f"pin_raw_{int(asyncio.get_event_loop().time())}.mp4")
+            raw_target = os.path.join(temp_dir, f"pin_raw_{int(time.time())}.mp4")
             if await download_url_to_file(pin_res["video_url"], raw_target):
-                play_target = os.path.join(temp_dir, f"pin_play_{int(asyncio.get_event_loop().time())}.mp4")
+                play_target = os.path.join(temp_dir, f"pin_play_{int(time.time())}.mp4")
                 if await ensure_playable_video(raw_target, play_target):
                     try: os.remove(raw_target)
                     except Exception: pass
@@ -363,7 +362,7 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
     fallback_res = await fallback_ytdlp_downloader(expanded_url, download_file=True)
     if fallback_res and fallback_res.get("local_file") and os.path.exists(fallback_res["local_file"]):
         raw_file = fallback_res["local_file"]
-        remuxed_file = os.path.join(temp_dir, f"play_{int(asyncio.get_event_loop().time())}.mp4")
+        remuxed_file = os.path.join(temp_dir, f"play_{int(time.time())}.mp4")
         if await ensure_playable_video(raw_file, remuxed_file):
             try: os.remove(raw_file)
             except Exception: pass
@@ -375,9 +374,9 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
     primary_res = await fetch_api_downloader(platform, expanded_url)
     if primary_res and primary_res.get("video_url"):
         v_url = primary_res["video_url"]
-        raw_target = os.path.join(temp_dir, f"api_raw_{int(asyncio.get_event_loop().time())}.mp4")
+        raw_target = os.path.join(temp_dir, f"api_raw_{int(time.time())}.mp4")
         if await download_url_to_file(v_url, raw_target):
-            play_target = os.path.join(temp_dir, f"api_play_{int(asyncio.get_event_loop().time())}.mp4")
+            play_target = os.path.join(temp_dir, f"api_play_{int(time.time())}.mp4")
             if await ensure_playable_video(raw_target, play_target):
                 try: os.remove(raw_target)
                 except Exception: pass
@@ -390,9 +389,9 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
     # 5. If stream URL obtained from yt-dlp metadata
     if fallback_res and fallback_res.get("video_url"):
         v_url = fallback_res["video_url"]
-        raw_target = os.path.join(temp_dir, f"ytdl_stream_{int(asyncio.get_event_loop().time())}.mp4")
+        raw_target = os.path.join(temp_dir, f"ytdl_stream_{int(time.time())}.mp4")
         if await download_url_to_file(v_url, raw_target):
-            play_target = os.path.join(temp_dir, f"ytdl_play_{int(asyncio.get_event_loop().time())}.mp4")
+            play_target = os.path.join(temp_dir, f"ytdl_play_{int(time.time())}.mp4")
             if await ensure_playable_video(raw_target, play_target):
                 try: os.remove(raw_target)
                 except Exception: pass
@@ -480,18 +479,18 @@ async def convert_video_media(
 
         ffmpeg_bin = get_ffmpeg_binary()
 
-        # Robust scaling filters guaranteeing even pixel dimensions (yuv420p compliant)
+        # Clean, 100% standard FFmpeg scale filters
         filter_map = {
-            "2160p": r"scale=trunc(iw*min(3840/iw,2160/ih)/2)*2:trunc(ih*min(3840/iw,2160/ih)/2)*2,setsar=1",
-            "1080p": r"scale=trunc(iw*min(1920/iw,1080/ih)/2)*2:trunc(ih*min(1920/iw,1080/ih)/2)*2,setsar=1",
-            "720p": r"scale=trunc(iw*min(1280/iw,720/ih)/2)*2:trunc(ih*min(1280/iw,720/ih)/2)*2,setsar=1",
-            "480p": r"scale=trunc(iw*min(854/iw,480/ih)/2)*2:trunc(ih*min(854/iw,480/ih)/2)*2,setsar=1",
-            "1to1": r"scale=1080:1080:force_original_aspect_ratio=decrease,pad=1080:1080:(ow-iw)/2:(oh-ih)/2:black,setsar=1",
-            "9to16": r"scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,setsar=1",
-            "compress": r"scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1"
+            "2160p": "scale=-2:2160",
+            "1080p": "scale=-2:1080",
+            "720p": "scale=-2:720",
+            "480p": "scale=-2:480",
+            "1to1": "scale=1080:1080:force_original_aspect_ratio=decrease,pad=1080:1080:(ow-iw)/2:(oh-ih)/2:black",
+            "9to16": "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black",
+            "compress": "scale=trunc(iw/2)*2:trunc(ih/2)*2"
         }
 
-        vf_str = filter_map.get(target_mode, "scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1")
+        vf_str = filter_map.get(target_mode, "scale=trunc(iw/2)*2:trunc(ih/2)*2")
         crf_val = "28" if target_mode == "compress" else "22"
 
         cmd = [
@@ -589,7 +588,7 @@ async def extract_audio_from_media(
     output_path: str,
     is_voice: bool = True
 ) -> bool:
-    """Extract sound into voice note (.ogg with opus) or audio (.mp3)."""
+    """Extract sound into voice note or audio."""
     if not is_ffmpeg_available():
         return False
 
@@ -601,25 +600,15 @@ async def extract_audio_from_media(
         
         ffmpeg_bin = get_ffmpeg_binary()
         
-        if is_voice:
-            cmd = [
-                ffmpeg_bin, "-y",
-                "-i", input_path,
-                "-vn",
-                "-c:a", "libopus",
-                "-b:a", "32k",
-                "-vbr", "on",
-                output_path
-            ]
-        else:
-            cmd = [
-                ffmpeg_bin, "-y",
-                "-i", input_path,
-                "-vn",
-                "-c:a", "libmp3lame",
-                "-q:a", "2",
-                output_path
-            ]
+        # Audio extraction command
+        cmd = [
+            ffmpeg_bin, "-y",
+            "-i", input_path,
+            "-vn",
+            "-c:a", "aac" if is_voice else "libmp3lame",
+            "-b:a", "64k" if is_voice else "192k",
+            output_path
+        ]
         success, _ = run_ffmpeg_command(cmd)
         return success
 
