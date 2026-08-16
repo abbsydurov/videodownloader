@@ -1,6 +1,8 @@
 import asyncio
 import re
 import os
+import sys
+import shutil
 import tempfile
 import logging
 import aiohttp
@@ -13,6 +15,26 @@ INSTAGRAM_PATTERN = re.compile(r'(https?://(?:www\.)?instagram\.com/(?:p|reel|tv
 PINTEREST_PATTERN = re.compile(r'(https?://(?:www\.)?(?:pinterest\.com/pin/|pin\.it/)[a-zA-Z0-9_\-\.]+)')
 SNAPCHAT_PATTERN = re.compile(r'(https?://(?:www\.)?snapchat\.com/(?:t|p|spotlight|add)/[a-zA-Z0-9_\-\.]+)')
 FACEBOOK_PATTERN = re.compile(r'(https?://(?:www\.)?(?:facebook\.com|fb\.watch|fb\.com)/(?:reel|videos|watch|share|story\.php|ads|posts)/[a-zA-Z0-9_\-\.\?=/]+)')
+
+def get_ffmpeg_binary() -> str:
+    """Find available ffmpeg binary across system PATH, imageio, and common locations."""
+    exe = shutil.which("ffmpeg")
+    if exe:
+        return exe
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        pass
+    for candidate in [
+        "ffmpeg",
+        "ffmpeg.exe",
+        r"C:\ffmpeg\bin\ffmpeg.exe",
+        r"C:\ProgramData\chocolatey\bin\ffmpeg.exe"
+    ]:
+        if shutil.which(candidate) or os.path.exists(candidate):
+            return candidate
+    return "ffmpeg"
 
 def detect_platform(url: str) -> Optional[str]:
     url_lower = url.lower()
@@ -62,21 +84,19 @@ async def fetch_api_downloader(platform: str, url: str) -> Optional[Dict[str, An
     return None
 
 async def fallback_ytdlp_downloader(url: str, download_file: bool = False) -> Optional[Dict[str, Any]]:
-    """Fallback engine using yt-dlp to extract high quality media WITH SOUND / AUDIO intact."""
+    """Fallback engine using yt-dlp with guaranteed audio/sound track merge."""
     loop = asyncio.get_event_loop()
     
     def run_yt_dlp():
         try:
             import yt_dlp
             
-            # Temporary file target if download is requested
             temp_dir = tempfile.gettempdir()
-            out_template = os.path.join(temp_dir, f"ytdl_%(id)s_%(epoch)s.%(ext)s")
+            out_template = os.path.join(temp_dir, f"ytdl_%(id)s_{int(asyncio.get_event_loop().time())}.%(ext)s")
             
             ydl_opts = {
                 'quiet': True,
                 'no_warnings': True,
-                # Guarantee BOTH video and audio streams are selected and merged
                 'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best',
                 'merge_output_format': 'mp4',
                 'skip_download': not download_file,
@@ -98,14 +118,12 @@ async def fallback_ytdlp_downloader(url: str, download_file: bool = False) -> Op
                     if not downloaded_file_path.endswith('.mp4'):
                         downloaded_file_path = os.path.splitext(downloaded_file_path)[0] + '.mp4'
                 
-                # Check format list or direct url
                 formats = info.get("formats", [])
                 video_url = info.get("url")
                 hd_url = None
                 sd_url = None
                 
                 if formats:
-                    # Filter video formats that have BOTH video AND audio (non-empty acodec & vcodec)
                     with_audio_formats = [
                         f for f in formats 
                         if f.get("url") and f.get("vcodec") != "none" and f.get("acodec") != "none"
@@ -117,7 +135,6 @@ async def fallback_ytdlp_downloader(url: str, download_file: bool = False) -> Op
                         sd_url = sorted_formats[-1].get("url")
                         video_url = hd_url or video_url
                     else:
-                        # If separated streams, sort all valid video formats
                         all_vformats = [f for f in formats if f.get("url") and f.get("vcodec") != "none"]
                         if all_vformats:
                             sorted_formats = sorted(all_vformats, key=lambda f: f.get("height") or 0, reverse=True)
@@ -150,12 +167,12 @@ async def fallback_ytdlp_downloader(url: str, download_file: bool = False) -> Op
     return await loop.run_in_executor(None, run_yt_dlp)
 
 async def download_media(url: str, force_local_download: bool = False) -> Dict[str, Any]:
-    """Unified downloader entry point with primary API + automatic fallback + audio guarantee."""
+    """Unified downloader entry point with sound guarantee."""
     platform = detect_platform(url)
     if not platform:
         return {"status": "error", "message": "Unsupported or invalid social media URL!"}
 
-    # 1. Try yt-dlp with audio merge guarantee first or direct API
+    # 1. Try yt-dlp first
     fallback_res = await fallback_ytdlp_downloader(url, download_file=force_local_download)
     if fallback_res and (fallback_res.get("video_url") or fallback_res.get("local_file")):
         fallback_res["platform"] = platform
@@ -195,9 +212,12 @@ async def download_file_to_bytes(url: str) -> Optional[bytes]:
     return None
 
 async def download_url_to_file(url: str, output_path: str) -> bool:
-    """Download direct URL stream into local file."""
+    """Download direct URL stream into local file with verification."""
     try:
-        async with aiohttp.ClientSession() as session:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        async with aiohttp.ClientSession(headers=headers) as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=90)) as resp:
                 if resp.status == 200:
                     with open(output_path, "wb") as f:
@@ -206,13 +226,14 @@ async def download_url_to_file(url: str, output_path: str) -> bool:
                             if not chunk:
                                 break
                             f.write(chunk)
-                    return True
+                    if os.path.exists(output_path) and os.path.getsize(output_path) > 1024:
+                        return True
     except Exception as e:
         logger.error(f"Failed to download URL to file {url}: {e}")
     return False
 
 # ==================== ADVANCED MEDIA & SIZE CONVERTER ENGINE ====================
-def run_ffmpeg_command(cmd: List[str]) -> bool:
+def run_ffmpeg_command(cmd: List[str]) -> Tuple[bool, str]:
     """Execute ffmpeg command synchronously with error handling."""
     try:
         res = subprocess.run(
@@ -222,11 +243,13 @@ def run_ffmpeg_command(cmd: List[str]) -> bool:
             timeout=180
         )
         if res.returncode == 0:
-            return True
-        logger.error(f"FFmpeg error: {res.stderr.decode('utf-8', errors='ignore')}")
+            return True, ""
+        err_msg = res.stderr.decode('utf-8', errors='ignore')
+        logger.error(f"FFmpeg error: {err_msg}")
+        return False, err_msg[-300:] if err_msg else "Unknown FFmpeg error"
     except Exception as e:
         logger.error(f"FFmpeg command exception: {e}")
-    return False
+        return False, str(e)
 
 async def convert_video_media(
     input_path: str,
@@ -234,37 +257,39 @@ async def convert_video_media(
     target_mode: str
 ) -> Tuple[bool, Optional[str]]:
     """
-    Convert video resolution or aspect ratio while preserving full sound/audio.
+    Convert video resolution or aspect ratio while preserving full audio track.
     Modes: 2160p, 1080p, 720p, 480p, 1to1 (Square), 9to16 (Vertical), compress
     """
     loop = asyncio.get_event_loop()
 
     def _convert():
-        if not os.path.exists(input_path):
-            return False, "Input video file does not exist."
+        if not os.path.exists(input_path) or os.path.getsize(input_path) == 0:
+            return False, "Input video file is empty or missing."
 
-        # Base ffmpeg filter mapping
-        # Preserving original aspect ratio with padding or scaling
+        ffmpeg_bin = get_ffmpeg_binary()
+
+        # Robust scaling filters guaranteeing even pixel dimensions (yuv420p compliant)
         filter_map = {
-            "2160p": "scale=-2:2160",
-            "1080p": "scale=-2:1080",
-            "720p": "scale=-2:720",
-            "480p": "scale=-2:480",
-            "1to1": "scale=1080:1080:force_original_aspect_ratio=decrease,pad=1080:1080:(ow-iw)/2:(oh-ih)/2:black",
-            "9to16": "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black",
-            "compress": "scale='min(1280,iw)':-2"
+            "2160p": "scale=trunc(iw*min(3840/iw\,2160/ih)/2)*2:trunc(ih*min(3840/iw\,2160/ih)/2)*2,setsar=1",
+            "1080p": "scale=trunc(iw*min(1920/iw\,1080/ih)/2)*2:trunc(ih*min(1920/iw\,1080/ih)/2)*2,setsar=1",
+            "720p": "scale=trunc(iw*min(1280/iw\,720/ih)/2)*2:trunc(ih*min(1280/iw\,720/ih)/2)*2,setsar=1",
+            "480p": "scale=trunc(iw*min(854/iw\,480/ih)/2)*2:trunc(ih*min(854/iw\,480/ih)/2)*2,setsar=1",
+            "1to1": "scale=1080:1080:force_original_aspect_ratio=decrease,pad=1080:1080:(ow-iw)/2:(oh-ih)/2:black,setsar=1",
+            "9to16": "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,setsar=1",
+            "compress": "scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1"
         }
 
-        vf_str = filter_map.get(target_mode, "scale=-2:1080")
-        
+        vf_str = filter_map.get(target_mode, "scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1")
         crf_val = "28" if target_mode == "compress" else "22"
 
         cmd = [
-            "ffmpeg", "-y",
+            ffmpeg_bin, "-y",
             "-i", input_path,
             "-vf", vf_str,
+            "-map", "0:v:0",
+            "-map", "0:a?",
             "-c:v", "libx264",
-            "-preset", "fast",
+            "-preset", "veryfast",
             "-crf", crf_val,
             "-c:a", "aac",
             "-b:a", "128k",
@@ -273,10 +298,10 @@ async def convert_video_media(
             output_path
         ]
 
-        success = run_ffmpeg_command(cmd)
+        success, err = run_ffmpeg_command(cmd)
         if success and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
             return True, None
-        return False, "FFmpeg conversion failed."
+        return False, err or "FFmpeg encoding failed."
 
     return await loop.run_in_executor(None, _convert)
 
@@ -292,25 +317,21 @@ async def convert_image_media(
 
     def _convert():
         try:
-            # Try PIL / Pillow first
             from PIL import Image, ImageOps
             img = Image.open(input_path)
-            img = ImageOps.exif_transpose(img) # Correct auto-rotation
+            img = ImageOps.exif_transpose(img)
 
             orig_w, orig_h = img.size
 
             if target_mode == "1to1":
-                # Square format with centered fit
                 target_size = (1080, 1080)
                 thumb = ImageOps.pad(img, target_size, color=(0, 0, 0))
                 thumb.save(output_path, "JPEG", quality=95)
             elif target_mode == "9to16":
-                # Vertical Story format
                 target_size = (1080, 1920)
                 thumb = ImageOps.pad(img, target_size, color=(0, 0, 0))
                 thumb.save(output_path, "JPEG", quality=95)
             elif target_mode == "2160p":
-                # 4K Ultra HD
                 ratio = 2160 / max(orig_h, 1)
                 new_w = int(orig_w * ratio)
                 resized = img.resize((new_w, 2160), Image.Resampling.LANCZOS)
@@ -337,14 +358,14 @@ async def convert_image_media(
 
             return True, None
         except Exception as pil_err:
-            # Fallback to FFmpeg for image resizing
+            ffmpeg_bin = get_ffmpeg_binary()
             cmd = [
-                "ffmpeg", "-y",
+                ffmpeg_bin, "-y",
                 "-i", input_path,
                 "-q:v", "2",
                 output_path
             ]
-            success = run_ffmpeg_command(cmd)
+            success, err = run_ffmpeg_command(cmd)
             if success and os.path.exists(output_path):
                 return True, None
             return False, f"Image conversion error: {pil_err}"
@@ -360,12 +381,14 @@ async def extract_audio_from_media(
     loop = asyncio.get_event_loop()
 
     def _extract():
-        if not os.path.exists(input_path):
+        if not os.path.exists(input_path) or os.path.getsize(input_path) == 0:
             return False
+        
+        ffmpeg_bin = get_ffmpeg_binary()
         
         if is_voice:
             cmd = [
-                "ffmpeg", "-y",
+                ffmpeg_bin, "-y",
                 "-i", input_path,
                 "-vn",
                 "-c:a", "libopus",
@@ -375,13 +398,14 @@ async def extract_audio_from_media(
             ]
         else:
             cmd = [
-                "ffmpeg", "-y",
+                ffmpeg_bin, "-y",
                 "-i", input_path,
                 "-vn",
                 "-c:a", "libmp3lame",
                 "-q:a", "2",
                 output_path
             ]
-        return run_ffmpeg_command(cmd)
+        success, _ = run_ffmpeg_command(cmd)
+        return success
 
     return await loop.run_in_executor(None, _extract)
