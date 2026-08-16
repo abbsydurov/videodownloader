@@ -592,18 +592,33 @@ async def handle_size_converter_callbacks(callback: CallbackQuery, bot: Bot):
         temp_dir = tempfile.gettempdir()
         input_file = cached_item.get("local_file")
         
-        # Ensure input file exists locally
-        if not input_file or not os.path.exists(input_file):
+        # Ensure input file exists locally and is not 0 bytes
+        if not input_file or not os.path.exists(input_file) or os.path.getsize(input_file) == 0:
             input_file = os.path.join(temp_dir, f"conv_in_{cache_hash}.mp4")
+            url = cached_item.get("url")
             v_url = cached_item.get("video_url")
-            if v_url:
-                await downloader.download_url_to_file(v_url, input_file)
+            
+            if url:
+                dl_res = await downloader.fallback_ytdlp_downloader(url, download_file=True)
+                if dl_res and dl_res.get("local_file") and os.path.exists(dl_res["local_file"]):
+                    input_file = dl_res["local_file"]
+            
+            if not os.path.exists(input_file) or os.path.getsize(input_file) == 0:
+                if v_url:
+                    await downloader.download_url_to_file(v_url, input_file)
+
+        if not os.path.exists(input_file) or os.path.getsize(input_file) == 0:
+            await proc_msg.edit_text(
+                "❌ <b>Error:</b> Could not fetch original video stream. Please re-send the link.",
+                parse_mode="HTML"
+            )
+            return
 
         output_file = os.path.join(temp_dir, f"conv_out_{target_mode}_{cache_hash}.mp4")
 
         success, err = await downloader.convert_video_media(input_file, output_file, target_mode)
 
-        if success and os.path.exists(output_file):
+        if success and os.path.exists(output_file) and os.path.getsize(output_file) > 0:
             new_size_mb = round(os.path.getsize(output_file) / (1024 * 1024), 2)
             caption = (
                 f"{get_p_emoji('check_mark')} <b>Successfully Converted to {target_mode.upper()}!</b>\n\n"
@@ -629,7 +644,7 @@ async def handle_size_converter_callbacks(callback: CallbackQuery, bot: Bot):
                 pass
         else:
             await proc_msg.edit_text(
-                f"❌ <b>Conversion Failed:</b> {err or 'FFmpeg error'}\n<i>Please try another resolution.</i>",
+                f"❌ <b>Conversion Failed:</b>\n<code>{err or 'FFmpeg conversion error'}</code>\n\n<i>Please try another format like 1080p or 720p.</i>",
                 parse_mode="HTML"
             )
 
