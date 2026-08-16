@@ -14,19 +14,26 @@ from config import API_ENDPOINTS, logger
 INSTAGRAM_PATTERN = re.compile(r'(https?://(?:www\.)?instagram\.com/(?:p|reel|tv|stories|share)/[a-zA-Z0-9_\-\.]+)')
 PINTEREST_PATTERN = re.compile(r'(https?://(?:www\.)?(?:pinterest\.com/pin/|pin\.it/)[a-zA-Z0-9_\-\.]+)')
 SNAPCHAT_PATTERN = re.compile(r'(https?://(?:www\.)?snapchat\.com/(?:t|p|spotlight|add)/[a-zA-Z0-9_\-\.]+)')
-FACEBOOK_PATTERN = re.compile(r'(https?://(?:www\.)?(?:facebook\.com|fb\.watch|fb\.com)/(?:reel|videos|watch|share|story\.php|ads|posts)/[a-zA-Z0-9_\-\.\?=/]+)')
+FACEBOOK_PATTERN = re.compile(r'(https?://(?:www\.)?(?:facebook\.com|fb\.watch|fb\.com|m\.facebook\.com)/(?:reel|videos|watch|share|story\.php|ads|posts)/[a-zA-Z0-9_\-\.\?=/]+)')
 
 def get_ffmpeg_binary() -> str:
-    """Find available ffmpeg binary across system PATH, imageio, and common locations."""
+    """Find available ffmpeg binary across imageio_ffmpeg, system PATH, and Heroku locations."""
+    try:
+        import imageio_ffmpeg
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        if exe and os.path.exists(exe):
+            return exe
+    except Exception:
+        pass
+
     exe = shutil.which("ffmpeg")
     if exe:
         return exe
-    try:
-        import imageio_ffmpeg
-        return imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception:
-        pass
+
     for candidate in [
+        "/usr/bin/ffmpeg",
+        "/usr/local/bin/ffmpeg",
+        "/app/vendor/ffmpeg/ffmpeg",
         "ffmpeg",
         "ffmpeg.exe",
         r"C:\ffmpeg\bin\ffmpeg.exe",
@@ -36,12 +43,23 @@ def get_ffmpeg_binary() -> str:
             return candidate
     return "ffmpeg"
 
+def is_ffmpeg_available() -> bool:
+    """Check if ffmpeg can be executed."""
+    bin_path = get_ffmpeg_binary()
+    try:
+        res = subprocess.run([bin_path, "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+        return res.returncode == 0
+    except Exception:
+        return False
+
 async def expand_short_url(url: str) -> str:
-    """Expand shortened social links (e.g. pin.it, fb.watch, share links)."""
+    """Expand shortened social links (e.g. fb.watch, facebook.com/share, pin.it)."""
     if any(k in url for k in ["pin.it", "fb.watch", "bit.ly", "t.co", "/share/"]):
         try:
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9"
             }
             async with aiohttp.ClientSession(headers=headers) as session:
                 async with session.head(url, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=8)) as resp:
@@ -74,8 +92,60 @@ def extract_urls(text: str) -> List[str]:
             urls.append(u)
     return urls
 
+def unescape_fb_url(url_str: str) -> str:
+    """Clean and unescape Facebook JSON encoded stream URLs."""
+    if not url_str:
+        return ""
+    clean = url_str.replace(r"\/", "/").replace("\\u0025", "%").replace("&amp;", "&")
+    return clean
+
+async def direct_facebook_scraper(url: str) -> Optional[Dict[str, Any]]:
+    """Direct scraper for Facebook Reels, Watch, and Video posts."""
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Sec-Fetch-Mode": "navigate"
+        }
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.get(url, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                if resp.status == 200:
+                    html = await resp.text()
+
+                    # 1. Search for HD playable URL
+                    hd_match = re.search(r'"playable_url_quality_hd"\s*:\s*"([^"]+)"', html) or \
+                               re.search(r'"browser_native_hd_url"\s*:\s*"([^"]+)"', html) or \
+                               re.search(r'hd_src\s*:\s*"([^"]+)"', html)
+                    
+                    # 2. Search for SD playable URL
+                    sd_match = re.search(r'"playable_url"\s*:\s*"([^"]+)"', html) or \
+                               re.search(r'"browser_native_sd_url"\s*:\s*"([^"]+)"', html) or \
+                               re.search(r'sd_src\s*:\s*"([^"]+)"', html)
+
+                    hd_url = unescape_fb_url(hd_match.group(1)) if hd_match else None
+                    sd_url = unescape_fb_url(sd_match.group(1)) if sd_match else None
+                    chosen_url = hd_url or sd_url
+
+                    if chosen_url and chosen_url.startswith("http"):
+                        # Extract title
+                        title_match = re.search(r'<title>([^<]+)</title>', html)
+                        title = title_match.group(1).replace(" | Facebook", "") if title_match else "Facebook Video"
+
+                        return {
+                            "status": "success",
+                            "video_url": chosen_url,
+                            "hd_url": hd_url or chosen_url,
+                            "sd_url": sd_url or chosen_url,
+                            "title": title[:100],
+                            "source": "facebook_direct_scraper"
+                        }
+    except Exception as e:
+        logger.warning(f"Facebook direct scraper error for {url}: {e}")
+    return None
+
 async def direct_pinterest_scraper(url: str) -> Optional[Dict[str, Any]]:
-    """Direct scraper for Pinterest video streams to prevent black screen and token expiration."""
+    """Direct scraper for Pinterest video streams."""
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -88,7 +158,6 @@ async def direct_pinterest_scraper(url: str) -> Optional[Dict[str, Any]]:
                     mp4_matches = re.findall(r'https?://[^\s"\'<>]+\.mp4', html)
                     valid_mp4s = [m for m in mp4_matches if "pinimg.com" in m or "v.pinimg" in m]
                     if valid_mp4s:
-                        # Prefer 720p or 1080p
                         best_mp4 = valid_mp4s[0]
                         for m in valid_mp4s:
                             if "720p" in m or "1080p" in m:
@@ -143,18 +212,21 @@ async def fallback_ytdlp_downloader(url: str, download_file: bool = True) -> Opt
             ydl_opts = {
                 'quiet': True,
                 'no_warnings': True,
-                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best',
+                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                 'merge_output_format': 'mp4',
                 'skip_download': not download_file,
                 'outtmpl': out_template,
-                'postprocessors': [{
-                    'key': 'FFmpegVideoRemuxer',
-                    'preferedformat': 'mp4',
-                }] if download_file else [],
                 'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept-Language': 'en-US,en;q=0.9'
                 }
             }
+            
+            if is_ffmpeg_available() and download_file:
+                ydl_opts['postprocessors'] = [{
+                    'key': 'FFmpegVideoRemuxer',
+                    'preferedformat': 'mp4',
+                }]
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=download_file)
@@ -165,7 +237,9 @@ async def fallback_ytdlp_downloader(url: str, download_file: bool = True) -> Opt
                 if download_file:
                     downloaded_file_path = ydl.prepare_filename(info)
                     if not downloaded_file_path.endswith('.mp4'):
-                        downloaded_file_path = os.path.splitext(downloaded_file_path)[0] + '.mp4'
+                        alt_path = os.path.splitext(downloaded_file_path)[0] + '.mp4'
+                        if os.path.exists(alt_path):
+                            downloaded_file_path = alt_path
                 
                 formats = info.get("formats", [])
                 video_url = info.get("url")
@@ -216,7 +290,10 @@ async def fallback_ytdlp_downloader(url: str, download_file: bool = True) -> Opt
     return await loop.run_in_executor(None, run_yt_dlp)
 
 async def ensure_playable_video(input_path: str, output_path: str) -> bool:
-    """Remux video into 100% playable progressive MP4 with yuv420p & faststart (eliminating black screen)."""
+    """Remux video into 100% playable progressive MP4 with yuv420p & faststart."""
+    if not is_ffmpeg_available():
+        return False
+
     loop = asyncio.get_event_loop()
     def _remux():
         ffmpeg_bin = get_ffmpeg_binary()
@@ -241,8 +318,7 @@ async def ensure_playable_video(input_path: str, output_path: str) -> bool:
     return await loop.run_in_executor(None, _remux)
 
 async def download_media(url: str, force_local_download: bool = True) -> Dict[str, Any]:
-    """Unified downloader entry point with automatic URL expansion, local download, and black screen fix."""
-    # 1. Expand short URLs (e.g. pin.it, share links)
+    """Unified downloader entry point supporting Instagram, Pinterest, Snapchat, and Facebook."""
     expanded_url = await expand_short_url(url)
     platform = detect_platform(expanded_url) or detect_platform(url)
     
@@ -251,20 +327,23 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
 
     temp_dir = tempfile.gettempdir()
 
-    # 2. Try yt-dlp with direct download
-    fallback_res = await fallback_ytdlp_downloader(expanded_url, download_file=True)
-    if fallback_res and fallback_res.get("local_file") and os.path.exists(fallback_res["local_file"]):
-        raw_file = fallback_res["local_file"]
-        # Remux to guarantee yuv420p faststart playback (fixes black screen)
-        remuxed_file = os.path.join(temp_dir, f"play_{int(asyncio.get_event_loop().time())}.mp4")
-        if await ensure_playable_video(raw_file, remuxed_file):
-            try: os.remove(raw_file)
-            except Exception: pass
-            fallback_res["local_file"] = remuxed_file
-        fallback_res["platform"] = platform
-        return fallback_res
+    # 1. For Facebook: Try Direct Scraper First (fastest & handles Reels, Watch & Posts)
+    if platform == "facebook":
+        fb_res = await direct_facebook_scraper(expanded_url)
+        if fb_res and fb_res.get("video_url"):
+            raw_target = os.path.join(temp_dir, f"fb_raw_{int(asyncio.get_event_loop().time())}.mp4")
+            if await download_url_to_file(fb_res["video_url"], raw_target):
+                play_target = os.path.join(temp_dir, f"fb_play_{int(asyncio.get_event_loop().time())}.mp4")
+                if await ensure_playable_video(raw_target, play_target):
+                    try: os.remove(raw_target)
+                    except Exception: pass
+                    fb_res["local_file"] = play_target
+                else:
+                    fb_res["local_file"] = raw_target
+                fb_res["platform"] = platform
+                return fb_res
 
-    # 3. For Pinterest, try direct HTML scraper
+    # 2. For Pinterest: Try Direct Scraper
     if platform == "pinterest":
         pin_res = await direct_pinterest_scraper(expanded_url)
         if pin_res and pin_res.get("video_url"):
@@ -279,6 +358,18 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
                     pin_res["local_file"] = raw_target
                 pin_res["platform"] = platform
                 return pin_res
+
+    # 3. Try yt-dlp with direct download
+    fallback_res = await fallback_ytdlp_downloader(expanded_url, download_file=True)
+    if fallback_res and fallback_res.get("local_file") and os.path.exists(fallback_res["local_file"]):
+        raw_file = fallback_res["local_file"]
+        remuxed_file = os.path.join(temp_dir, f"play_{int(asyncio.get_event_loop().time())}.mp4")
+        if await ensure_playable_video(raw_file, remuxed_file):
+            try: os.remove(raw_file)
+            except Exception: pass
+            fallback_res["local_file"] = remuxed_file
+        fallback_res["platform"] = platform
+        return fallback_res
 
     # 4. Try Primary Render API
     primary_res = await fetch_api_downloader(platform, expanded_url)
@@ -499,6 +590,9 @@ async def extract_audio_from_media(
     is_voice: bool = True
 ) -> bool:
     """Extract sound into voice note (.ogg with opus) or audio (.mp3)."""
+    if not is_ffmpeg_available():
+        return False
+
     loop = asyncio.get_event_loop()
 
     def _extract():
