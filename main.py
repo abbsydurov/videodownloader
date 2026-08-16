@@ -284,7 +284,7 @@ async def process_media_urls(message: Message, bot: Bot):
             parse_mode="HTML"
         )
 
-        res = await downloader.download_media(url, force_local_download=False)
+        res = await downloader.download_media(url, force_local_download=True)
 
         if res.get("status") == "success" and (res.get("video_url") or res.get("local_file")):
             video_url = res.get("video_url")
