@@ -6,7 +6,7 @@ import tempfile
 import time
 from datetime import datetime
 from collections import defaultdict
-from typing import Dict, Any, List, Callable, Awaitable
+from typing import Dict, Any, List, Callable, Awaitable, Optional
 
 from aiogram import Bot, Dispatcher, Router, F, BaseMiddleware, types
 from aiogram.enums import ParseMode, ChatType
@@ -16,7 +16,7 @@ from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton, Message,
     CallbackQuery, InlineQuery, InlineQueryResultArticle,
     InlineQueryResultVideo, InputTextMessageContent, URLInputFile,
-    TelegramObject
+    FSInputFile, TelegramObject
 )
 from aiogram.exceptions import TelegramAPIError
 
@@ -60,16 +60,16 @@ admin_router = Router(name="admin_handler")
 inline_router = Router(name="inline_handler")
 
 USER_HELP_GUIDE = (
-    "★ <b><u>Sᴏᴄɪᴀʟ Mᴇᴅɪᴀ Vɪᴅᴇᴏ Dᴏᴡɴʟᴏᴀᴅᴇʀ Gᴜɪᴅᴇ</u></b> ★\n\n"
+    "★ <b><u>Sᴏᴄɪᴀʟ Mᴇᴅɪᴀ Vɪᴅᴇᴏ Dᴏᴡɴʟᴏᴀᴅᴇʀ & Mᴇᴅɪᴀ Rᴇsɪᴢᴇʀ Gᴜɪᴅᴇ</u></b> ★\n\n"
     "✨ <b>Sᴜᴘᴘᴏʀᴛᴇᴅ Pʟᴀᴛғᴏʀᴍs:</b>\n"
     "• 📸 <b>Instagram</b> ── <i>Reels, Posts, IGTV, Stories</i>\n"
     "• 📌 <b>Pinterest</b> ── <i>Pins & Video clips</i>\n"
     "• 👻 <b>Snapchat</b> ── <i>Spotlight & Stories</i>\n"
     "• 📘 <b>Facebook</b> ── <i>Reels, Videos & Meta Ads</i>\n\n"
-    "⚡️ <b>Hᴏᴡ Tᴏ Dᴏᴡɴʟᴏᴀᴅ:</b>\n"
-    "1️⃣ Send any social media video link directly to the bot.\n"
-    "2️⃣ Select <b>Download Video</b> or <b>Voice Note (.ogg)</b>.\n"
-    "3️⃣ Use <b>📐 Size Converter</b> to change video resolution & format!\n\n"
+    "⚡️ <b>Hᴏᴡ Tᴏ Usᴇ:</b>\n"
+    "1️⃣ <b>Download with Sound:</b> Send any video link to download with 100% full audio track.\n"
+    "2️⃣ <b>Direct Media Resizer:</b> Send ANY Video or Photo directly to resize, convert to 4K / 1080p / 720p, 1:1 Square, or 9:16 Vertical!\n"
+    "3️⃣ <b>Voice Note & Audio:</b> Convert any video into a Telegram Voice Note (.ogg) or MP3.\n\n"
     "📦 <b>Mᴜʟᴛɪ-Dᴏᴡɴʟᴏᴀᴅɪɴɢ:</b> Paste multiple video links together in one message!\n"
     "🔎 <b>Iɴʟɪɴᴇ Sᴇᴀʀᴄʜ Mᴏᴅᴇ:</b> Type <code>@botusername &lt;link&gt;</code> in any Telegram chat."
 )
@@ -85,7 +85,7 @@ ADMIN_HELP_GUIDE = (
     "• <code>/broadcast</code> ── <i>Send announcement to all registered users</i>"
 )
 
-# Helper function to generate styled inline buttons with colors (primary, success, danger) and custom emoji icons
+# Helper function to generate styled inline buttons with colors and custom emoji icons
 def make_btn(text: str, callback_data: str, style: str = "primary", emoji_name: str = None) -> InlineKeyboardButton:
     kwargs = {
         "text": text,
@@ -100,16 +100,15 @@ def make_btn(text: str, callback_data: str, style: str = "primary", emoji_name: 
             kwargs["text"] = f"{get_btn_emoji(emoji_name)} {text}"
     return InlineKeyboardButton(**kwargs)
 
-def get_downloader_keyboard(url: str, platform: str, video_url: str, hd_url: str = None) -> InlineKeyboardMarkup:
-    cache_hash = str(hash(url) % 1000000)
+def get_downloader_keyboard(url: str, platform: str, video_url: str, cache_hash: str) -> InlineKeyboardMarkup:
     kb = [
         [
-            make_btn("Video (Original 4K)", f"dl_vid:{platform}:{cache_hash}", style="success", emoji_name="fire"),
-            make_btn("Voice Note", f"dl_voice:{platform}:{cache_hash}", style="primary", emoji_name="mic")
+            make_btn("Video (Full Sound 4K)", f"dl_vid:{platform}:{cache_hash}", style="success", emoji_name="fire"),
+            make_btn("Voice Note (.ogg)", f"dl_voice:{platform}:{cache_hash}", style="primary", emoji_name="mic")
         ],
         [
-            make_btn("Audio MP3", f"dl_audio:{platform}:{cache_hash}", style="primary", emoji_name="studio_mic"),
-            make_btn("Size Converter", f"size_menu:{platform}:{cache_hash}", style="primary", emoji_name="sparkles")
+            make_btn("Audio (MP3)", f"dl_audio:{platform}:{cache_hash}", style="primary", emoji_name="studio_mic"),
+            make_btn("📐 Size Converter", f"size_menu:{platform}:{cache_hash}", style="primary", emoji_name="sparkles")
         ],
         [
             make_btn("Close", "cmd_close", style="danger", emoji_name="trash")
@@ -120,7 +119,7 @@ def get_downloader_keyboard(url: str, platform: str, video_url: str, hd_url: str
 def get_size_converter_keyboard(platform: str, cache_hash: str) -> InlineKeyboardMarkup:
     kb = [
         [
-            make_btn("4K (2160p)", f"size_set:2160p:{platform}:{cache_hash}", style="success", emoji_name="glowing_star"),
+            make_btn("4K Ultra HD (2160p)", f"size_set:2160p:{platform}:{cache_hash}", style="success", emoji_name="glowing_star"),
             make_btn("1080p Full HD", f"size_set:1080p:{platform}:{cache_hash}", style="primary", emoji_name="snowflake")
         ],
         [
@@ -128,17 +127,60 @@ def get_size_converter_keyboard(platform: str, cache_hash: str) -> InlineKeyboar
             make_btn("480p SD", f"size_set:480p:{platform}:{cache_hash}", style="primary", emoji_name="phone")
         ],
         [
-            make_btn("1:1 Square", f"size_set:1to1:{platform}:{cache_hash}", style="primary", emoji_name="check_box"),
-            make_btn("9:16 Vertical", f"size_set:9to16:{platform}:{cache_hash}", style="primary", emoji_name="selfie")
+            make_btn("1:1 Square (Feed)", f"size_set:1to1:{platform}:{cache_hash}", style="primary", emoji_name="check_box"),
+            make_btn("9:16 Vertical (Reels)", f"size_set:9to16:{platform}:{cache_hash}", style="primary", emoji_name="selfie")
         ],
         [
+            make_btn("Compress / Optimize", f"size_set:compress:{platform}:{cache_hash}", style="primary", emoji_name="chart_up"),
             make_btn("Back", f"size_back:{platform}:{cache_hash}", style="danger", emoji_name="back")
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
+def get_direct_media_keyboard(media_type: str, cache_id: str) -> InlineKeyboardMarkup:
+    if media_type == "photo":
+        kb = [
+            [
+                make_btn("4K Ultra HD", f"dir_size:2160p:photo:{cache_id}", style="success", emoji_name="glowing_star"),
+                make_btn("1080p Full HD", f"dir_size:1080p:photo:{cache_id}", style="primary", emoji_name="snowflake")
+            ],
+            [
+                make_btn("1:1 Square (Post)", f"dir_size:1to1:photo:{cache_id}", style="primary", emoji_name="check_box"),
+                make_btn("9:16 Vertical (Story)", f"dir_size:9to16:photo:{cache_id}", style="primary", emoji_name="selfie")
+            ],
+            [
+                make_btn("Compress / Optimize", f"dir_size:compress:photo:{cache_id}", style="primary", emoji_name="chart_up"),
+                make_btn("Close", "cmd_close", style="danger", emoji_name="trash")
+            ]
+        ]
+    else: # Video or document video
+        kb = [
+            [
+                make_btn("4K Ultra HD (2160p)", f"dir_size:2160p:video:{cache_id}", style="success", emoji_name="glowing_star"),
+                make_btn("1080p Full HD", f"dir_size:1080p:video:{cache_id}", style="primary", emoji_name="snowflake")
+            ],
+            [
+                make_btn("720p HD", f"dir_size:720p:video:{cache_id}", style="primary", emoji_name="fire"),
+                make_btn("480p SD", f"dir_size:480p:video:{cache_id}", style="primary", emoji_name="phone")
+            ],
+            [
+                make_btn("1:1 Square (Feed)", f"dir_size:1to1:video:{cache_id}", style="primary", emoji_name="check_box"),
+                make_btn("9:16 Vertical (Reel)", f"dir_size:9to16:video:{cache_id}", style="primary", emoji_name="selfie")
+            ],
+            [
+                make_btn("Voice Note (.ogg)", f"dir_voice:video:{cache_id}", style="primary", emoji_name="mic"),
+                make_btn("Audio (MP3)", f"dir_audio:video:{cache_id}", style="primary", emoji_name="studio_mic")
+            ],
+            [
+                make_btn("Compress / Optimize", f"dir_size:compress:video:{cache_id}", style="primary", emoji_name="chart_up"),
+                make_btn("Close", "cmd_close", style="danger", emoji_name="trash")
+            ]
+        ]
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
 # Store download cache for callbacks
 DOWNLOAD_CACHE: Dict[str, Dict[str, Any]] = {}
+DIRECT_MEDIA_CACHE: Dict[str, Dict[str, Any]] = {}
 
 # ==================== START & HELP ROUTER ====================
 def get_main_menu_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
@@ -152,7 +194,7 @@ def get_main_menu_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
             make_btn("Facebook Ads", "prompt_fb", style="primary", emoji_name="eye")
         ],
         [
-            make_btn("Voice Guide / Instructions", "cmd_voice_guide", style="success", emoji_name="mic")
+            make_btn("Media Resizer & Converter Guide", "cmd_voice_guide", style="success", emoji_name="mic")
         ]
     ]
     if is_admin:
@@ -171,16 +213,14 @@ async def command_start_handler(message: Message, bot: Bot):
     keyboard = get_main_menu_keyboard(is_admin=is_admin)
 
     caption_text = (
-        f"{get_p_emoji('fire')} <b>ADVANCED SOCIAL MEDIA VIDEO DOWNLOADER</b> {get_p_emoji('fire')}\n\n"
+        f"{get_p_emoji('fire')} <b>ADVANCED SOCIAL MEDIA DOWNLOADER & MEDIA RESIZER</b> {get_p_emoji('fire')}\n\n"
         f"Welcome, <b>{user.first_name}</b>!\n\n"
-        f"Just send me any link from <b>Instagram, Pinterest, Snapchat, Facebook, or Meta Ads</b> to download videos in <b>Full HD / 4K</b> quality or convert to <b>Voice Notes</b> instantly!\n\n"
-        f"• {get_p_emoji('check_mark')} <b>Instagram Reels & Stories</b>\n"
-        f"• {get_p_emoji('check_mark')} <b>Pinterest Pins & Clips</b>\n"
-        f"• {get_p_emoji('check_mark')} <b>Snapchat Spotlight & Stories</b>\n"
-        f"• {get_p_emoji('check_mark')} <b>Facebook Reels & Meta Ads</b>\n"
-        f"• {get_p_emoji('check_mark')} <b>Multi-Downloading System</b>\n"
-        f"• {get_p_emoji('check_mark')} <b>Inline Search Mode</b>: <code>@{bot_info.username} &lt;link&gt;</code>\n\n"
-        f"<i>Paste your link below to start downloading!</i>"
+        f"⚡️ <b>Features:</b>\n"
+        f"• 🔗 <b>Download with Full Sound:</b> Send any link from Instagram, Pinterest, Snapchat, or Facebook.\n"
+        f"• 📁 <b>Direct Media Converter:</b> Send ANY Video or Photo directly to resize to 4K, 1080p, 720p, 1:1 Square, or 9:16 Vertical!\n"
+        f"• 🎙 <b>Audio Extraction:</b> Convert any video into a Voice Note (.ogg) or MP3.\n"
+        f"• 🔎 <b>Inline Search Mode:</b> Type <code>@{bot_info.username} &lt;link&gt;</code> in any chat.\n\n"
+        f"<i>Paste your video link or send any media file below!</i>"
     )
     try:
         await message.answer_photo(photo=WELCOME_IMAGE, caption=caption_text, reply_markup=keyboard, parse_mode="HTML")
@@ -210,7 +250,7 @@ async def command_stats_handler(message: Message):
         f"📌 Pinterest Downloads: {stats['platforms']['pinterest']}\n"
         f"👻 Snapchat Downloads: {stats['platforms']['snapchat']}\n"
         f"📘 Facebook & Meta Ads: {stats['platforms']['facebook']}\n\n"
-        f"{get_p_emoji('check_mark')} <i>All Downloader APIs & Fallback Engine Active!</i>"
+        f"{get_p_emoji('check_mark')} <i>All Downloader APIs & Audio Remuxer Engine Active!</i>"
     )
     await message.answer(text, parse_mode="HTML")
 
@@ -229,7 +269,7 @@ async def process_media_urls(message: Message, bot: Bot):
     if total_urls > 1:
         await message.answer(
             f"{get_p_emoji('zap')} <b>Multi-Downloading System Activated!</b>\n\n"
-            f"Processing <b>{total_urls}</b> social media links in queue...",
+            f"Processing <b>{total_urls}</b> social media links with full sound guarantee...",
             parse_mode="HTML"
         )
 
@@ -238,28 +278,30 @@ async def process_media_urls(message: Message, bot: Bot):
         status_msg = await message.answer(
             f"{get_p_emoji('down')} <b>Downloading Media [{idx}/{total_urls}]</b>...\n"
             f"• <b>Platform:</b> {platform.title() if platform else 'Social Media'}\n"
-            f"• <b>Quality:</b> Full HD / 4K Auto-Detect\n"
-            f"<i>Please wait...</i>",
+            f"• <b>Sound Track:</b> Stereo Audio Guaranteed\n"
+            f"• <b>Quality:</b> Original Full HD / 4K\n"
+            f"<i>Please wait a moment...</i>",
             parse_mode="HTML"
         )
 
-        res = await downloader.download_media(url)
+        res = await downloader.download_media(url, force_local_download=False)
 
-        if res.get("status") == "success" and res.get("video_url"):
+        if res.get("status") == "success" and (res.get("video_url") or res.get("local_file")):
             video_url = res.get("video_url")
-            hd_url = res.get("hd_url", video_url)
+            local_file = res.get("local_file")
             title = res.get("title", f"{platform.title()} Video")
             width = res.get("width")
             height = res.get("height")
             duration = res.get("duration", 0)
 
-            cache_key = f"{platform}:{hash(url) % 1000000}"
+            cache_hash = str(abs(hash(url)) % 1000000)
+            cache_key = f"{platform}:{cache_hash}"
             
             DOWNLOAD_CACHE[cache_key] = {
                 "url": url,
                 "platform": platform,
                 "video_url": video_url,
-                "hd_url": hd_url,
+                "local_file": local_file,
                 "title": title,
                 "thumbnail": res.get("thumbnail"),
                 "width": width,
@@ -267,32 +309,42 @@ async def process_media_urls(message: Message, bot: Bot):
                 "duration": duration
             }
 
-            keyboard = get_downloader_keyboard(url, platform, video_url, hd_url)
+            keyboard = get_downloader_keyboard(url, platform, video_url or "", cache_hash)
             caption = (
                 f"{get_p_emoji('check_mark')} <b>Video Downloaded Successfully!</b>\n\n"
                 f"• 🌐 <b>Platform:</b> {platform.title()}\n"
-                f"• 📺 <b>Quality:</b> Original Resolution (Exact Size)\n"
-                f"• ⚡️ <b>Status:</b> Complete"
+                f"• 🔊 <b>Sound:</b> High Quality Audio Included\n"
+                f"• 📺 <b>Resolution:</b> {width}x{height if height else 'Original'}\n"
+                f"• ⚡️ <b>Status:</b> Ready"
             )
 
-            video_kwargs = {
-                "video": URLInputFile(video_url),
-                "caption": caption,
-                "reply_markup": keyboard,
-                "parse_mode": "HTML",
-                "supports_streaming": True
-            }
-            if width and height:
-                video_kwargs["width"] = int(width)
-                video_kwargs["height"] = int(height)
-            if duration:
-                video_kwargs["duration"] = int(duration)
-
+            # Send video with sound
             try:
-                await message.answer_video(**video_kwargs)
+                if local_file and os.path.exists(local_file):
+                    await message.answer_video(
+                        video=FSInputFile(local_file),
+                        caption=caption,
+                        reply_markup=keyboard,
+                        parse_mode="HTML",
+                        supports_streaming=True,
+                        width=int(width) if width else None,
+                        height=int(height) if height else None,
+                        duration=int(duration) if duration else None
+                    )
+                elif video_url:
+                    await message.answer_video(
+                        video=URLInputFile(video_url),
+                        caption=caption,
+                        reply_markup=keyboard,
+                        parse_mode="HTML",
+                        supports_streaming=True,
+                        width=int(width) if width else None,
+                        height=int(height) if height else None,
+                        duration=int(duration) if duration else None
+                    )
                 await status_msg.delete()
             except Exception as e:
-                logger.warning(f"Direct video send failed, sending download options: {e}")
+                logger.warning(f"Video stream send failed, sending download options: {e}")
                 await status_msg.edit_text(
                     caption,
                     reply_markup=keyboard,
@@ -326,122 +378,101 @@ async def process_media_urls(message: Message, bot: Bot):
             )
             await db.log_download_request(user_id, platform or "unknown", url, status="error")
 
+# ==================== DIRECT MEDIA HANDLERS (VIDEO & PHOTO) ====================
+@downloader_router.message(F.video | F.animation | (F.document & F.document.mime_type.startswith("video/")))
+async def handle_direct_video_upload(message: Message, bot: Bot):
+    video_obj = message.video or message.animation or message.document
+    file_id = video_obj.file_id
+    file_unique_id = video_obj.file_unique_id
+    
+    file_size_mb = round((video_obj.file_size or 0) / (1024 * 1024), 2)
+    w = getattr(video_obj, "width", 0)
+    h = getattr(video_obj, "height", 0)
+    dur = getattr(video_obj, "duration", 0)
+
+    DIRECT_MEDIA_CACHE[file_unique_id] = {
+        "file_id": file_id,
+        "type": "video",
+        "size_mb": file_size_mb,
+        "width": w,
+        "height": h,
+        "duration": dur,
+        "user_id": message.from_user.id
+    }
+
+    keyboard = get_direct_media_keyboard("video", file_unique_id)
+    text = (
+        f"{get_p_emoji('sparkles')} 📐 <b>DIRECT VIDEO RECEIVED ── RESIZE & CONVERTER</b> {get_p_emoji('sparkles')}\n\n"
+        f"• 📺 <b>Current Resolution:</b> {w}x{h}\n"
+        f"• 📦 <b>File Size:</b> {file_size_mb} MB\n"
+        f"• ⏱ <b>Duration:</b> {dur}s\n\n"
+        f"Select your desired resolution, aspect ratio, or audio extraction below:"
+    )
+    await message.reply(text, reply_markup=keyboard, parse_mode="HTML")
+
+@downloader_router.message(F.photo | (F.document & F.document.mime_type.startswith("image/")))
+async def handle_direct_photo_upload(message: Message, bot: Bot):
+    if message.photo:
+        photo_obj = message.photo[-1] # Largest resolution
+        file_id = photo_obj.file_id
+        file_unique_id = photo_obj.file_unique_id
+        w = photo_obj.width
+        h = photo_obj.height
+        file_size_mb = round((photo_obj.file_size or 0) / (1024 * 1024), 2)
+    else:
+        doc = message.document
+        file_id = doc.file_id
+        file_unique_id = doc.file_unique_id
+        w, h = 0, 0
+        file_size_mb = round((doc.file_size or 0) / (1024 * 1024), 2)
+
+    DIRECT_MEDIA_CACHE[file_unique_id] = {
+        "file_id": file_id,
+        "type": "photo",
+        "size_mb": file_size_mb,
+        "width": w,
+        "height": h,
+        "user_id": message.from_user.id
+    }
+
+    keyboard = get_direct_media_keyboard("photo", file_unique_id)
+    text = (
+        f"{get_p_emoji('sparkles')} 📐 <b>IMAGE RECEIVED ── RESIZE & CONVERTER</b> {get_p_emoji('sparkles')}\n\n"
+        f"• 🖼 <b>Current Size:</b> {w}x{h if h else 'Auto'}\n"
+        f"• 📦 <b>File Size:</b> {file_size_mb} MB\n\n"
+        f"Select your desired output resolution or crop format below:"
+    )
+    await message.reply(text, reply_markup=keyboard, parse_mode="HTML")
+
 # ==================== CALLBACK ROUTER ====================
 @callback_router.callback_query(F.data.startswith("prompt_") | F.data.startswith("info_"))
 async def handle_platform_prompt(callback: CallbackQuery, bot: Bot):
     platform_key = callback.data.split("_")[1]
     prompt_map = {
-        "insta": ("📸 Instagram Video Downloader", "Please send your Instagram Reel, Post, IGTV, or Story video link/URL below!"),
-        "pin": ("📌 Pinterest Video Downloader", "Please send your Pinterest Pin or Video clip link/URL below!"),
-        "snap": ("👻 Snapchat Video Downloader", "Please send your Snapchat Spotlight or Story video link/URL below!"),
-        "fb": ("📘 Facebook & Meta Ads Downloader", "Please send your Facebook Reel, Watch Video, or Meta Ads video link/URL below!")
+        "insta": ("📸 Instagram Video Downloader", "Send your Instagram Reel, Post, IGTV, or Story video link below!"),
+        "pin": ("📌 Pinterest Video Downloader", "Send your Pinterest Pin or Video clip link below!"),
+        "snap": ("👻 Snapchat Video Downloader", "Send your Snapchat Spotlight or Story link below!"),
+        "fb": ("📘 Facebook & Meta Ads Downloader", "Send your Facebook Reel, Video, or Meta Ads link below!")
     }
-    title, desc = prompt_map.get(platform_key, ("Social Media Downloader", "Please send your video link/URL below!"))
+    title, desc = prompt_map.get(platform_key, ("Social Media Downloader", "Please send your video link below!"))
     text = (
         f"{get_p_emoji('fire')} <b>{title}</b> {get_p_emoji('fire')}\n\n"
         f"• {get_p_emoji('mic')} <b>Instruction:</b> {desc}\n\n"
-        f"{get_p_emoji('sparkles')} <i>Send video link/URL ── Voice Note & Full HD / 4K Video will be generated automatically!</i>"
+        f"{get_p_emoji('sparkles')} <i>Direct video with full stereo sound will be downloaded automatically!</i>"
     )
-    await callback.answer("📥 Send your video link/URL below!", show_alert=False)
+    await callback.answer("📥 Send your video link below!", show_alert=False)
     await callback.message.answer(text, parse_mode="HTML")
 
 @callback_router.callback_query(F.data == "cmd_voice_guide")
 async def handle_voice_guide_callback(callback: CallbackQuery):
     text = (
-        f"{get_p_emoji('mic')} <b>VOICE & USAGE INSTRUCTION GUIDE</b> {get_p_emoji('mic')}\n\n"
-        f"• <b>How to download:</b> Simply copy any video link from Instagram, Pinterest, Snapchat, or Facebook and send it directly in this chat!\n\n"
-        f"• <b>Automatic 4K & Full HD:</b> Videos are automatically delivered in maximum 4K / 1080p resolution in exact original size & uncropped aspect ratio.\n\n"
-        f"• <b>Voice Note & Audio MP3:</b> Click 'Voice Note' or 'Audio MP3' on any downloaded video card to generate audio format instantly!\n\n"
-        f"• <b>Size Converter:</b> Use the 'Size Converter' button on any video result card to convert to 4K, 1080p, 720p, 480p, 1:1 Square, or 9:16 Vertical format."
+        f"{get_p_emoji('mic')} <b>VOICE, RESIZER & USAGE INSTRUCTION GUIDE</b> {get_p_emoji('mic')}\n\n"
+        f"• <b>Download with Sound:</b> Send any video link from Instagram, Pinterest, Snapchat, or Facebook. The bot downloads high quality 1080p/4K with complete audio!\n\n"
+        f"• <b>Send Any Video or Photo:</b> Send any video or image directly to this chat, and choose 4K, 1080p, 720p, 1:1 Square (Instagram Feed), or 9:16 Vertical (Reel/Story) format!\n\n"
+        f"• <b>Voice Note & MP3:</b> Click 'Voice Note' or 'Audio MP3' on any video to extract crisp audio."
     )
-    await callback.answer("🎙 Voice Guide sent below!", show_alert=False)
+    await callback.answer("🎙 Instructions sent below!", show_alert=False)
     await callback.message.answer(text, parse_mode="HTML")
-
-@callback_router.callback_query(F.data.startswith("mode_"))
-async def handle_mode_info(callback: CallbackQuery):
-    mode_key = callback.data.split("_")[1]
-    if mode_key == "hd":
-        await callback.answer("📺 Full HD / 4K Mode is ACTIVE by default!", show_alert=True)
-    elif mode_key == "voice":
-        await callback.answer("🎙 Voice Note Extraction is ACTIVE! Click 'Voice Note' on any media.", show_alert=True)
-
-@callback_router.callback_query(F.data == "cmd_emojis")
-async def handle_emojis_menu_callback(callback: CallbackQuery):
-    custom_list = await db.get_all_custom_emojis()
-    text = f"{get_p_emoji('sparkles')} <b>SAVED CUSTOM PREMIUM EMOJI IDs</b>\n\n"
-    if not custom_list:
-        text += "<i>No custom emojis stored in DB yet. Using 48 built-in premium emoji IDs!</i>\n"
-    else:
-        for item in custom_list[:15]:
-            formatted = get_p_emoji(item['name'])
-            text += f"• <b>{item['name']}</b>: <code>{item['emoji_id']}</code> ({formatted})\n"
-    
-    text += "\n<i>Use command <code>/addemoji &lt;name&gt; &lt;id&gt;</code> to upload new emoji IDs.</i>"
-    await callback.answer()
-    await callback.message.answer(text, parse_mode="HTML")
-
-@callback_router.callback_query(F.data == "cmd_admin_panel")
-async def handle_admin_panel_callback(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    if not await is_admin_user(user_id):
-        await callback.answer("⛔ Admin Access Required!", show_alert=True)
-        return
-
-    text = (
-        f"{get_p_emoji('crown')} <b>ADMIN CONTROL PANEL</b> {get_p_emoji('crown')}\n\n"
-        f"Welcome Super Admin!\n\n"
-        f"<b>Admin Control Dashboard:</b>\n"
-        f"• <code>/logs</code> ── Live Download Logs\n"
-        f"• <code>/stats</code> ── Downloader Statistics\n"
-        f"• <code>/emojis</code> ── Emojis Manager\n"
-        f"• <code>/grant &lt;id&gt;</code> | <code>/revoke &lt;id&gt;</code> ── Access Guard\n"
-        f"• <code>/broadcast</code> ── Send Announcement"
-    )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            make_btn("Live Stats", "cmd_stats", style="primary", emoji_name="chart_up"),
-            make_btn("Emojis List", "cmd_emojis", style="primary", emoji_name="gear")
-        ],
-        [
-            make_btn("System Logs", "cmd_logs", style="primary", emoji_name="clipboard"),
-            make_btn("Broadcast", "cmd_broadcast_prompt", style="primary", emoji_name="speech")
-        ],
-        [
-            make_btn("Close Panel", "cmd_close", style="danger", emoji_name="trash")
-        ]
-    ])
-    await callback.answer()
-    await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
-
-@callback_router.callback_query(F.data == "cmd_logs")
-async def handle_logs_callback(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    if not await is_admin_user(user_id):
-        return
-    logs = await db.get_recent_download_logs(limit=15)
-    text = f"{get_p_emoji('gear')} <b>RECENT SYSTEM DOWNLOAD LOGS</b>\n\n"
-    if not logs:
-        text += "<i>No logs recorded yet.</i>"
-    else:
-        for lg in logs:
-            st_icon = "✅" if lg.get("status") == "success" else "❌"
-            dt = lg.get("downloaded_at", "")[:19].replace("T", " ")
-            text += f"{st_icon} <b>[{lg.get('platform', 'media').upper()}]</b> User: <code>{lg.get('user_id')}</code> ⏱ <i>{dt}</i>\n"
-    await callback.answer()
-    await callback.message.answer(text, parse_mode="HTML")
-
-@callback_router.callback_query(F.data == "cmd_broadcast_prompt")
-async def handle_broadcast_prompt_callback(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    if not await is_admin_user(user_id):
-        await callback.answer("⛔ Admin Access Required!", show_alert=True)
-        return
-    await callback.answer()
-    await callback.message.answer(
-        f"{get_p_emoji('speech')} <b>BROADCAST ANNOUNCEMENT</b>\n\n"
-        f"Reply to any message with <code>/broadcast</code> or send <code>/broadcast &lt;text&gt;</code> to notify all users.",
-        parse_mode="HTML"
-    )
 
 @callback_router.callback_query(F.data.startswith("dl_"))
 async def handle_download_callbacks(callback: CallbackQuery, bot: Bot):
@@ -455,62 +486,73 @@ async def handle_download_callbacks(callback: CallbackQuery, bot: Bot):
 
     if action == "dl_vid":
         await callback.answer("⚡️ Fetching Full HD / 4K Video...", show_alert=False)
-        if cached_item and cached_item.get("video_url"):
+        if cached_item:
+            local_file = cached_item.get("local_file")
+            video_url = cached_item.get("video_url")
             try:
-                await callback.message.answer_video(
-                    video=URLInputFile(cached_item["video_url"]),
-                    caption=f"{get_p_emoji('check_mark')} <b>Downloaded in Full HD / 4K!</b>",
-                    parse_mode="HTML"
-                )
+                if local_file and os.path.exists(local_file):
+                    await callback.message.answer_video(
+                        video=FSInputFile(local_file),
+                        caption=f"{get_p_emoji('check_mark')} <b>Downloaded with Full Stereo Sound!</b>",
+                        parse_mode="HTML"
+                    )
+                elif video_url:
+                    await callback.message.answer_video(
+                        video=URLInputFile(video_url),
+                        caption=f"{get_p_emoji('check_mark')} <b>Downloaded with Full Stereo Sound!</b>",
+                        parse_mode="HTML"
+                    )
             except Exception as e:
                 await callback.message.answer(
-                    f"🔗 <b>Direct Video Stream Link:</b>\n{cached_item['video_url']}",
+                    f"🔗 <b>Direct Video Link:</b>\n{video_url}",
                     parse_mode="HTML"
                 )
 
     elif action == "dl_voice" or action == "dl_audio":
-        await callback.answer("🎙 Generating Voice Note / Audio...", show_alert=True)
-        if cached_item and cached_item.get("video_url"):
-            media_url = cached_item["video_url"]
-            try:
-                stream_bytes = await downloader.download_file_to_bytes(media_url)
-                if stream_bytes:
-                    temp_file = os.path.join(tempfile.gettempdir(), f"voice_{callback.from_user.id}.ogg")
-                    with open(temp_file, "wb") as f:
-                        f.write(stream_bytes)
-                    
-                    if action == "dl_voice":
+        await callback.answer("🎙 Extracting Audio...", show_alert=True)
+        if cached_item:
+            media_url = cached_item.get("video_url")
+            local_file = cached_item.get("local_file")
+            
+            temp_dir = tempfile.gettempdir()
+            input_video = local_file
+            
+            # Download stream if local file not present
+            if not input_video or not os.path.exists(input_video):
+                input_video = os.path.join(temp_dir, f"in_{callback.from_user.id}_{int(time.time())}.mp4")
+                if media_url:
+                    await downloader.download_url_to_file(media_url, input_video)
+
+            if input_video and os.path.exists(input_video):
+                is_voice = (action == "dl_voice")
+                ext = ".ogg" if is_voice else ".mp3"
+                out_audio = os.path.join(temp_dir, f"out_{callback.from_user.id}_{int(time.time())}{ext}")
+                
+                success = await downloader.extract_audio_from_media(input_video, out_audio, is_voice=is_voice)
+                if success and os.path.exists(out_audio):
+                    if is_voice:
                         await callback.message.answer_voice(
-                            voice=types.FSInputFile(temp_file),
+                            voice=FSInputFile(out_audio),
                             caption=f"{get_p_emoji('mic')} <b>Voice Note Extracted!</b>",
                             parse_mode="HTML"
                         )
                     else:
                         await callback.message.answer_audio(
-                            audio=types.FSInputFile(temp_file),
-                            title=cached_item.get('title', 'Audio'),
-                            caption=f"{get_p_emoji('studio_mic')} <b>Audio Extracted!</b>",
+                            audio=FSInputFile(out_audio),
+                            title=cached_item.get('title', 'Extracted Audio'),
+                            caption=f"{get_p_emoji('studio_mic')} <b>High Quality MP3 Audio!</b>",
                             parse_mode="HTML"
                         )
                     try:
-                        os.remove(temp_file)
+                        os.remove(out_audio)
                     except Exception:
                         pass
                 else:
-                    await callback.message.answer_audio(
-                        audio=URLInputFile(media_url),
-                        caption=f"{get_p_emoji('studio_mic')} <b>Audio Stream</b>",
-                        parse_mode="HTML"
-                    )
-            except Exception as e:
-                logger.error(f"Voice note conversion error: {e}")
-                await callback.answer("❌ Audio extraction failed for this format.", show_alert=True)
+                    await callback.answer("❌ Could not extract audio from this stream.", show_alert=True)
 
-    elif action == "dl_qual":
-        await callback.answer("📺 Quality selected: 4K / Full HD 1080p (Auto-Best)", show_alert=True)
-
+# ==================== SIZE CONVERTER ENGINE CALLBACKS ====================
 @callback_router.callback_query(F.data.startswith("size_"))
-async def handle_size_converter_callbacks(callback: CallbackQuery):
+async def handle_size_converter_callbacks(callback: CallbackQuery, bot: Bot):
     data = callback.data
     parts = data.split(":")
     action = parts[0]
@@ -530,8 +572,66 @@ async def handle_size_converter_callbacks(callback: CallbackQuery):
             await callback.message.edit_text(text=text, reply_markup=kb, parse_mode="HTML")
 
     elif action == "size_set":
-        resolution = parts[1]
-        await callback.answer(f"✅ Converted output format to {resolution.upper()}!", show_alert=True)
+        target_mode = parts[1]
+        platform = parts[2] if len(parts) > 2 else "video"
+        cache_hash = parts[3] if len(parts) > 3 else "0"
+        cache_key = f"{platform}:{cache_hash}"
+
+        cached_item = DOWNLOAD_CACHE.get(cache_key)
+        if not cached_item:
+            await callback.answer("⚠️ Media session expired. Please re-send link.", show_alert=True)
+            return
+
+        await callback.answer(f"⚡️ Converting to {target_mode.upper()} with audio...", show_alert=False)
+        proc_msg = await callback.message.answer(
+            f"{get_p_emoji('gear')} <b>Converting Media to {target_mode.upper()}...</b>\n"
+            f"<i>Applying hardware encoding & preserving sound track...</i>",
+            parse_mode="HTML"
+        )
+
+        temp_dir = tempfile.gettempdir()
+        input_file = cached_item.get("local_file")
+        
+        # Ensure input file exists locally
+        if not input_file or not os.path.exists(input_file):
+            input_file = os.path.join(temp_dir, f"conv_in_{cache_hash}.mp4")
+            v_url = cached_item.get("video_url")
+            if v_url:
+                await downloader.download_url_to_file(v_url, input_file)
+
+        output_file = os.path.join(temp_dir, f"conv_out_{target_mode}_{cache_hash}.mp4")
+
+        success, err = await downloader.convert_video_media(input_file, output_file, target_mode)
+
+        if success and os.path.exists(output_file):
+            new_size_mb = round(os.path.getsize(output_file) / (1024 * 1024), 2)
+            caption = (
+                f"{get_p_emoji('check_mark')} <b>Successfully Converted to {target_mode.upper()}!</b>\n\n"
+                f"• 📐 <b>Output Format:</b> {target_mode.upper()}\n"
+                f"• 🔊 <b>Sound:</b> Full Audio Preserved\n"
+                f"• 📦 <b>File Size:</b> {new_size_mb} MB"
+            )
+            try:
+                await callback.message.answer_video(
+                    video=FSInputFile(output_file),
+                    caption=caption,
+                    parse_mode="HTML",
+                    supports_streaming=True
+                )
+                await proc_msg.delete()
+            except Exception as send_err:
+                logger.error(f"Error sending converted video: {send_err}")
+                await proc_msg.edit_text(f"❌ Failed to send converted file: {send_err}")
+            
+            try:
+                os.remove(output_file)
+            except Exception:
+                pass
+        else:
+            await proc_msg.edit_text(
+                f"❌ <b>Conversion Failed:</b> {err or 'FFmpeg error'}\n<i>Please try another resolution.</i>",
+                parse_mode="HTML"
+            )
 
     elif action == "size_back":
         platform = parts[1] if len(parts) > 1 else "video"
@@ -541,18 +641,129 @@ async def handle_size_converter_callbacks(callback: CallbackQuery):
         video_url = cached_item.get("video_url", "") if cached_item else ""
         url = cached_item.get("url", "") if cached_item else ""
         
-        kb = get_downloader_keyboard(url, platform, video_url)
+        kb = get_downloader_keyboard(url, platform, video_url, cache_hash)
         caption = (
             f"{get_p_emoji('check_mark')} <b>Video Downloaded Successfully!</b>\n\n"
             f"• 🌐 <b>Platform:</b> {platform.title()}\n"
-            f"• 📺 <b>Quality:</b> Original Aspect Ratio / Full HD\n"
-            f"• ⚡️ <b>Status:</b> Complete"
+            f"• 🔊 <b>Sound:</b> Stereo Audio Included\n"
+            f"• ⚡️ <b>Status:</b> Ready"
         )
         await callback.answer()
         try:
             await callback.message.edit_caption(caption=caption, reply_markup=kb, parse_mode="HTML")
         except Exception:
             await callback.message.edit_text(text=caption, reply_markup=kb, parse_mode="HTML")
+
+# ==================== DIRECT MEDIA CONVERTER CALLBACKS ====================
+@callback_router.callback_query(F.data.startswith("dir_"))
+async def handle_direct_media_callbacks(callback: CallbackQuery, bot: Bot):
+    data = callback.data
+    parts = data.split(":")
+    action = parts[0]
+    
+    if action == "dir_size":
+        target_mode = parts[1]
+        media_type = parts[2]
+        cache_id = parts[3]
+
+        cached = DIRECT_MEDIA_CACHE.get(cache_id)
+        if not cached:
+            await callback.answer("⚠️ Media expired. Please upload video/photo again.", show_alert=True)
+            return
+
+        await callback.answer(f"⚡️ Processing {target_mode.upper()}...", show_alert=False)
+        proc_msg = await callback.message.answer(
+            f"{get_p_emoji('gear')} <b>Converting {media_type.title()} to {target_mode.upper()}...</b>\n"
+            f"<i>Please wait a few seconds...</i>",
+            parse_mode="HTML"
+        )
+
+        temp_dir = tempfile.gettempdir()
+        file_id = cached["file_id"]
+        
+        # Download from Telegram
+        tg_file = await bot.get_file(file_id)
+        in_ext = ".jpg" if media_type == "photo" else ".mp4"
+        in_path = os.path.join(temp_dir, f"dir_in_{cache_id}{in_ext}")
+        await bot.download_file(tg_file.file_path, in_path)
+
+        out_ext = ".jpg" if media_type == "photo" else ".mp4"
+        out_path = os.path.join(temp_dir, f"dir_out_{target_mode}_{cache_id}{out_ext}")
+
+        if media_type == "photo":
+            success, err = await downloader.convert_image_media(in_path, out_path, target_mode)
+            if success and os.path.exists(out_path):
+                new_size_mb = round(os.path.getsize(out_path) / (1024 * 1024), 2)
+                await callback.message.answer_photo(
+                    photo=FSInputFile(out_path),
+                    caption=f"{get_p_emoji('check_mark')} <b>Image Resized to {target_mode.upper()}!</b>\n• 📦 <b>Size:</b> {new_size_mb} MB",
+                    parse_mode="HTML"
+                )
+                await proc_msg.delete()
+            else:
+                await proc_msg.edit_text(f"❌ Image resizing failed: {err}")
+        else: # Video
+            success, err = await downloader.convert_video_media(in_path, out_path, target_mode)
+            if success and os.path.exists(out_path):
+                new_size_mb = round(os.path.getsize(out_path) / (1024 * 1024), 2)
+                await callback.message.answer_video(
+                    video=FSInputFile(out_path),
+                    caption=f"{get_p_emoji('check_mark')} <b>Video Converted to {target_mode.upper()}!</b>\n• 🔊 <b>Sound:</b> Intact\n• 📦 <b>Size:</b> {new_size_mb} MB",
+                    parse_mode="HTML",
+                    supports_streaming=True
+                )
+                await proc_msg.delete()
+            else:
+                await proc_msg.edit_text(f"❌ Video conversion failed: {err}")
+
+        # Cleanup
+        try:
+            if os.path.exists(in_path): os.remove(in_path)
+            if os.path.exists(out_path): os.remove(out_path)
+        except Exception:
+            pass
+
+    elif action in ("dir_voice", "dir_audio"):
+        cache_id = parts[2]
+        cached = DIRECT_MEDIA_CACHE.get(cache_id)
+        if not cached:
+            await callback.answer("⚠️ Media expired. Re-upload video.", show_alert=True)
+            return
+
+        await callback.answer("🎙 Extracting Audio...", show_alert=True)
+        temp_dir = tempfile.gettempdir()
+        file_id = cached["file_id"]
+        tg_file = await bot.get_file(file_id)
+        in_path = os.path.join(temp_dir, f"dir_in_{cache_id}.mp4")
+        await bot.download_file(tg_file.file_path, in_path)
+
+        is_voice = (action == "dir_voice")
+        ext = ".ogg" if is_voice else ".mp3"
+        out_path = os.path.join(temp_dir, f"dir_audio_{cache_id}{ext}")
+
+        success = await downloader.extract_audio_from_media(in_path, out_path, is_voice=is_voice)
+        if success and os.path.exists(out_path):
+            if is_voice:
+                await callback.message.answer_voice(
+                    voice=FSInputFile(out_path),
+                    caption=f"{get_p_emoji('mic')} <b>Voice Note Extracted!</b>",
+                    parse_mode="HTML"
+                )
+            else:
+                await callback.message.answer_audio(
+                    audio=FSInputFile(out_path),
+                    title="Audio Note",
+                    caption=f"{get_p_emoji('studio_mic')} <b>MP3 Audio Extracted!</b>",
+                    parse_mode="HTML"
+                )
+        else:
+            await callback.message.answer("❌ Failed to extract audio.")
+
+        try:
+            if os.path.exists(in_path): os.remove(in_path)
+            if os.path.exists(out_path): os.remove(out_path)
+        except Exception:
+            pass
 
 @callback_router.callback_query(F.data == "cmd_close")
 async def handle_close_callback(callback: CallbackQuery):
@@ -750,7 +961,7 @@ async def inline_download_handler(inline_query: InlineQuery):
 
         results.append(
             InlineQueryResultVideo(
-                id=f"vid_{hash(url) % 100000}",
+                id=f"vid_{abs(hash(url)) % 100000}",
                 video_url=v_url,
                 mime_type="video/mp4",
                 thumbnail_url=res.get("thumbnail") or "https://i.ibb.co/Gfc7zqjp/Auto-Rq-Tools.png",
@@ -762,7 +973,7 @@ async def inline_download_handler(inline_query: InlineQuery):
     else:
         results.append(
             InlineQueryResultArticle(
-                id=f"err_{hash(url) % 100000}",
+                id=f"err_{abs(hash(url)) % 100000}",
                 title=f"❌ Download Failed for {platform.title()}",
                 input_message_content=InputTextMessageContent(
                     message_text=f"❌ Unable to fetch video from link: {url}",
@@ -775,7 +986,7 @@ async def inline_download_handler(inline_query: InlineQuery):
 
 # ==================== MAIN INITIALIZATION ====================
 async def main():
-    logger.info("🚀 Starting Social Media Video Downloader Bot...")
+    logger.info("🚀 Starting Social Media Video Downloader & Media Resizer Bot...")
     
     # Initialize MongoDB
     await db.init_db()
@@ -798,7 +1009,7 @@ async def main():
     dp.include_router(inline_router)
 
     # Start Polling
-    logger.info("✅ Bot is online & listening for commands!")
+    logger.info("✅ Bot is online & listening for commands & media uploads!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
