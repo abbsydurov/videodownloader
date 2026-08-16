@@ -36,6 +36,22 @@ def get_ffmpeg_binary() -> str:
             return candidate
     return "ffmpeg"
 
+async def expand_short_url(url: str) -> str:
+    """Expand shortened social links (e.g. pin.it, fb.watch, share links)."""
+    if any(k in url for k in ["pin.it", "fb.watch", "bit.ly", "t.co", "/share/"]):
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+            async with aiohttp.ClientSession(headers=headers) as session:
+                async with session.head(url, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                    expanded = str(resp.url)
+                    logger.info(f"Expanded URL: {url} -> {expanded}")
+                    return expanded
+        except Exception as e:
+            logger.warning(f"Failed to expand URL {url}: {e}")
+    return url
+
 def detect_platform(url: str) -> Optional[str]:
     url_lower = url.lower()
     if "instagram.com" in url_lower or "instagr.am" in url_lower:
@@ -57,6 +73,36 @@ def extract_urls(text: str) -> List[str]:
         if p:
             urls.append(u)
     return urls
+
+async def direct_pinterest_scraper(url: str) -> Optional[Dict[str, Any]]:
+    """Direct scraper for Pinterest video streams to prevent black screen and token expiration."""
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        }
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.get(url, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=12)) as resp:
+                if resp.status == 200:
+                    html = await resp.text()
+                    mp4_matches = re.findall(r'https?://[^\s"\'<>]+\.mp4', html)
+                    valid_mp4s = [m for m in mp4_matches if "pinimg.com" in m or "v.pinimg" in m]
+                    if valid_mp4s:
+                        # Prefer 720p or 1080p
+                        best_mp4 = valid_mp4s[0]
+                        for m in valid_mp4s:
+                            if "720p" in m or "1080p" in m:
+                                best_mp4 = m
+                                break
+                        return {
+                            "status": "success",
+                            "video_url": best_mp4,
+                            "title": "Pinterest Video",
+                            "source": "pinterest_direct_scraper"
+                        }
+    except Exception as e:
+        logger.warning(f"Pinterest direct scraper error: {e}")
+    return None
 
 async def fetch_api_downloader(platform: str, url: str) -> Optional[Dict[str, Any]]:
     """Query the primary render API endpoint."""
@@ -83,8 +129,8 @@ async def fetch_api_downloader(platform: str, url: str) -> Optional[Dict[str, An
         logger.warning(f"Primary API error for {platform} ({url}): {e}")
     return None
 
-async def fallback_ytdlp_downloader(url: str, download_file: bool = False) -> Optional[Dict[str, Any]]:
-    """Fallback engine using yt-dlp with guaranteed audio/sound track merge."""
+async def fallback_ytdlp_downloader(url: str, download_file: bool = True) -> Optional[Dict[str, Any]]:
+    """Fallback engine using yt-dlp with audio merge guarantee."""
     loop = asyncio.get_event_loop()
     
     def run_yt_dlp():
@@ -105,6 +151,9 @@ async def fallback_ytdlp_downloader(url: str, download_file: bool = False) -> Op
                     'key': 'FFmpegVideoRemuxer',
                     'preferedformat': 'mp4',
                 }] if download_file else [],
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                }
             }
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -152,7 +201,7 @@ async def fallback_ytdlp_downloader(url: str, download_file: bool = False) -> Op
                     "video_url": video_url,
                     "hd_url": hd_url or video_url,
                     "sd_url": sd_url or video_url,
-                    "local_file": downloaded_file_path if (downloaded_file_path and os.path.exists(downloaded_file_path)) else None,
+                    "local_file": downloaded_file_path if (downloaded_file_path and os.path.exists(downloaded_file_path) and os.path.getsize(downloaded_file_path) > 1024) else None,
                     "title": str(title)[:100],
                     "thumbnail": thumb,
                     "width": width,
@@ -166,44 +215,115 @@ async def fallback_ytdlp_downloader(url: str, download_file: bool = False) -> Op
 
     return await loop.run_in_executor(None, run_yt_dlp)
 
-async def download_media(url: str, force_local_download: bool = False) -> Dict[str, Any]:
-    """Unified downloader entry point with sound guarantee."""
-    platform = detect_platform(url)
+async def ensure_playable_video(input_path: str, output_path: str) -> bool:
+    """Remux video into 100% playable progressive MP4 with yuv420p & faststart (eliminating black screen)."""
+    loop = asyncio.get_event_loop()
+    def _remux():
+        ffmpeg_bin = get_ffmpeg_binary()
+        cmd = [
+            ffmpeg_bin, "-y",
+            "-i", input_path,
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "22",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-map", "0:v:0",
+            "-map", "0:a?",
+            "-movflags", "+faststart",
+            output_path
+        ]
+        success, _ = run_ffmpeg_command(cmd)
+        if success and os.path.exists(output_path) and os.path.getsize(output_path) > 1024:
+            return True
+        return False
+    return await loop.run_in_executor(None, _remux)
+
+async def download_media(url: str, force_local_download: bool = True) -> Dict[str, Any]:
+    """Unified downloader entry point with automatic URL expansion, local download, and black screen fix."""
+    # 1. Expand short URLs (e.g. pin.it, share links)
+    expanded_url = await expand_short_url(url)
+    platform = detect_platform(expanded_url) or detect_platform(url)
+    
     if not platform:
         return {"status": "error", "message": "Unsupported or invalid social media URL!"}
 
-    # 1. Try yt-dlp first
-    fallback_res = await fallback_ytdlp_downloader(url, download_file=force_local_download)
-    if fallback_res and (fallback_res.get("video_url") or fallback_res.get("local_file")):
+    temp_dir = tempfile.gettempdir()
+
+    # 2. Try yt-dlp with direct download
+    fallback_res = await fallback_ytdlp_downloader(expanded_url, download_file=True)
+    if fallback_res and fallback_res.get("local_file") and os.path.exists(fallback_res["local_file"]):
+        raw_file = fallback_res["local_file"]
+        # Remux to guarantee yuv420p faststart playback (fixes black screen)
+        remuxed_file = os.path.join(temp_dir, f"play_{int(asyncio.get_event_loop().time())}.mp4")
+        if await ensure_playable_video(raw_file, remuxed_file):
+            try: os.remove(raw_file)
+            except Exception: pass
+            fallback_res["local_file"] = remuxed_file
         fallback_res["platform"] = platform
         return fallback_res
 
-    # 2. Try Primary Render API
-    primary_res = await fetch_api_downloader(platform, url)
-    if primary_res:
-        v_url = primary_res.get("video_url")
-        if v_url and isinstance(v_url, str) and v_url.startswith("http"):
-            return {
-                "status": "success",
-                "platform": platform,
-                "video_url": v_url,
-                "hd_url": primary_res.get("hd_url") or v_url,
-                "sd_url": primary_res.get("sd_url") or v_url,
-                "title": primary_res.get("title", f"{platform.title()} Video"),
-                "thumbnail": primary_res.get("thumbnail") or primary_res.get("thumb"),
-                "source": "primary_api"
-            }
+    # 3. For Pinterest, try direct HTML scraper
+    if platform == "pinterest":
+        pin_res = await direct_pinterest_scraper(expanded_url)
+        if pin_res and pin_res.get("video_url"):
+            raw_target = os.path.join(temp_dir, f"pin_raw_{int(asyncio.get_event_loop().time())}.mp4")
+            if await download_url_to_file(pin_res["video_url"], raw_target):
+                play_target = os.path.join(temp_dir, f"pin_play_{int(asyncio.get_event_loop().time())}.mp4")
+                if await ensure_playable_video(raw_target, play_target):
+                    try: os.remove(raw_target)
+                    except Exception: pass
+                    pin_res["local_file"] = play_target
+                else:
+                    pin_res["local_file"] = raw_target
+                pin_res["platform"] = platform
+                return pin_res
+
+    # 4. Try Primary Render API
+    primary_res = await fetch_api_downloader(platform, expanded_url)
+    if primary_res and primary_res.get("video_url"):
+        v_url = primary_res["video_url"]
+        raw_target = os.path.join(temp_dir, f"api_raw_{int(asyncio.get_event_loop().time())}.mp4")
+        if await download_url_to_file(v_url, raw_target):
+            play_target = os.path.join(temp_dir, f"api_play_{int(asyncio.get_event_loop().time())}.mp4")
+            if await ensure_playable_video(raw_target, play_target):
+                try: os.remove(raw_target)
+                except Exception: pass
+                primary_res["local_file"] = play_target
+            else:
+                primary_res["local_file"] = raw_target
+            primary_res["platform"] = platform
+            return primary_res
+
+    # 5. If stream URL obtained from yt-dlp metadata
+    if fallback_res and fallback_res.get("video_url"):
+        v_url = fallback_res["video_url"]
+        raw_target = os.path.join(temp_dir, f"ytdl_stream_{int(asyncio.get_event_loop().time())}.mp4")
+        if await download_url_to_file(v_url, raw_target):
+            play_target = os.path.join(temp_dir, f"ytdl_play_{int(asyncio.get_event_loop().time())}.mp4")
+            if await ensure_playable_video(raw_target, play_target):
+                try: os.remove(raw_target)
+                except Exception: pass
+                fallback_res["local_file"] = play_target
+            else:
+                fallback_res["local_file"] = raw_target
+            fallback_res["platform"] = platform
+            return fallback_res
 
     return {
         "status": "error",
         "platform": platform,
-        "message": f"Unable to fetch video from {platform.title()}. The media might be private or deleted."
+        "message": f"Unable to fetch video from {platform.title()}. Please verify if the post is public."
     }
 
 async def download_file_to_bytes(url: str) -> Optional[bytes]:
-    """Download direct video/audio stream into memory or temporary file."""
+    """Download direct video/audio stream into memory."""
     try:
-        async with aiohttp.ClientSession() as session:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        async with aiohttp.ClientSession(headers=headers) as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
                 if resp.status == 200:
                     return await resp.read()
@@ -212,10 +332,11 @@ async def download_file_to_bytes(url: str) -> Optional[bytes]:
     return None
 
 async def download_url_to_file(url: str, output_path: str) -> bool:
-    """Download direct URL stream into local file with verification."""
+    """Download direct URL stream into local file with headers & verification."""
     try:
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://www.google.com/"
         }
         async with aiohttp.ClientSession(headers=headers) as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=90)) as resp:
