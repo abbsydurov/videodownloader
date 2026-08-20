@@ -85,20 +85,18 @@ ADMIN_HELP_GUIDE = (
     "• <code>/broadcast</code> ── <i>Send announcement to all registered users</i>"
 )
 
-# Helper function to generate styled inline buttons with colors and custom emoji icons
+# Helper function to generate styled inline buttons with custom emoji icons
 def make_btn(text: str, callback_data: str, style: str = "primary", emoji_name: str = None) -> InlineKeyboardButton:
-    kwargs = {
-        "text": text,
-        "callback_data": callback_data,
-        "style": style
-    }
-    if emoji_name:
-        emoji_id = get_btn_emoji_id(emoji_name)
-        if emoji_id:
-            kwargs["icon_custom_emoji_id"] = emoji_id
-        else:
-            kwargs["text"] = f"{get_btn_emoji(emoji_name)} {text}"
-    return InlineKeyboardButton(**kwargs)
+    char = get_btn_emoji(emoji_name) if emoji_name else ""
+    btn_text = f"{char} {text}".strip() if char else text
+    emoji_id = get_btn_emoji_id(emoji_name) if emoji_name else None
+    
+    if emoji_id:
+        try:
+            return InlineKeyboardButton(text=btn_text, callback_data=callback_data, icon_custom_emoji_id=emoji_id)
+        except Exception:
+            pass
+    return InlineKeyboardButton(text=btn_text, callback_data=callback_data)
 
 def get_downloader_keyboard(url: str, platform: str, video_url: str, cache_hash: str) -> InlineKeyboardMarkup:
     kb = [
