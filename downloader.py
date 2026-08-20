@@ -315,6 +315,64 @@ async def direct_instagram_ajax_scraper(url: str) -> Optional[Dict[str, Any]]:
 
     return None
 
+async def direct_indown_scraper(url: str) -> Optional[Dict[str, Any]]:
+    """Scrape InDown.io for Instagram Reels, Posts, and Photos."""
+    clean_url = url.split("?")[0]
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Referer": "https://indown.io/reels",
+        "Origin": "https://indown.io",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9"
+    }
+    try:
+        async with aiohttp.ClientSession(headers=headers) as session:
+            # 1. Fetch CSRF token
+            async with session.get("https://indown.io/reels", timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    html = await resp.text()
+                    token_m = re.search(r'name="_token"\s+value="([^"]+)"', html)
+                    if token_m:
+                        token = token_m.group(1)
+                        post_data = {
+                            "referer": "https://indown.io/reels",
+                            "locale": "en",
+                            "_token": token,
+                            "link": clean_url
+                        }
+                        async with session.post("https://indown.io/download", data=post_data, timeout=aiohttp.ClientTimeout(total=15)) as post_resp:
+                            if post_resp.status == 200:
+                                post_html = await post_resp.text()
+                                
+                                # Search for direct video link
+                                v_matches = re.findall(r'href=["\'](https?://[^\s"\'<>]+)["\'][^>]*class=["\'][^"\']*btn-primary[^"\']*["\']', post_html) or \
+                                            re.findall(r'href=["\'](https?://[^\s"\'<>]+\.mp4[^\s"\'<>]*)["\']', post_html) or \
+                                            re.findall(r'src=["\'](https?://[^\s"\'<>]+\.mp4[^\s"\'<>]*)["\']', post_html)
+                                
+                                for v in v_matches:
+                                    if "cdninstagram" in v or "instagram" in v or "mp4" in v or "download" in v:
+                                        return {
+                                            "status": "success",
+                                            "media_type": "video",
+                                            "video_url": v.replace("&amp;", "&"),
+                                            "title": "Instagram Reel",
+                                            "source": "indown_scraper"
+                                        }
+                                
+                                # Search for image link if no video
+                                img_matches = re.findall(r'href=["\'](https?://[^\s"\'<>]+\.(?:jpg|jpeg|png|webp)[^\s"\'<>]*)["\']', post_html)
+                                if img_matches:
+                                    return {
+                                        "status": "success",
+                                        "media_type": "photo",
+                                        "image_url": img_matches[0].replace("&amp;", "&"),
+                                        "title": "Instagram Photo",
+                                        "source": "indown_scraper"
+                                    }
+    except Exception as e:
+        logger.warning(f"InDown scraper error: {e}")
+    return None
+
 async def cobalt_instagram_scraper(url: str) -> Optional[Dict[str, Any]]:
     """Query multi-instance Cobalt engine for Instagram links."""
     instances = [
@@ -751,6 +809,7 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
 
         # B. If Primary API returns error or fails, fallback to multi-layer scrapers
         scrapers = [
+            direct_indown_scraper,
             direct_instagram_graphql_scraper,
             direct_instagram_ajax_scraper,
             cobalt_instagram_scraper,
