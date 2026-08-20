@@ -12,7 +12,7 @@ from typing import Dict, Any, Optional, List, Tuple
 from config import API_ENDPOINTS, logger
 
 # URL Regex Patterns
-INSTAGRAM_PATTERN = re.compile(r'(https?://(?:www\.)?(?:instagram\.com|instagr\.am)/(?:p|reel|tv|stories|share/reel|share/p|share)/[a-zA-Z0-9_\-\.]+)')
+INSTAGRAM_PATTERN = re.compile(r'(https?://(?:www\.)?(?:instagram\.com|instagr\.am|ig\.me)/(?:p|reel|reels|tv|stories|share/reel|share/p|share)/[a-zA-Z0-9_\-\./\?=&]+)')
 PINTEREST_PATTERN = re.compile(r'(https?://(?:www\.)?(?:pinterest\.com/pin/|pin\.it/)[a-zA-Z0-9_\-\.]+)')
 SNAPCHAT_PATTERN = re.compile(r'(https?://(?:www\.)?snapchat\.com/(?:t|p|spotlight|add)/[a-zA-Z0-9_\-\.]+)')
 FACEBOOK_PATTERN = re.compile(r'(https?://(?:www\.)?(?:facebook\.com|fb\.watch|fb\.com|m\.facebook\.com)/(?:reel|videos|watch|share|story\.php|ads|posts)/[a-zA-Z0-9_\-\.\?=/]+)')
@@ -55,7 +55,7 @@ def is_ffmpeg_available() -> bool:
 
 async def expand_short_url(url: str) -> str:
     """Expand shortened social links (e.g. pin.it, fb.watch, instagram share links)."""
-    if any(k in url for k in ["pin.it", "fb.watch", "bit.ly", "t.co", "/share/"]):
+    if any(k in url for k in ["pin.it", "fb.watch", "bit.ly", "t.co", "/share/", "ig.me"]):
         try:
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -73,7 +73,7 @@ async def expand_short_url(url: str) -> str:
 
 def detect_platform(url: str) -> Optional[str]:
     url_lower = url.lower()
-    if "instagram.com" in url_lower or "instagr.am" in url_lower:
+    if "instagram.com" in url_lower or "instagr.am" in url_lower or "ig.me" in url_lower:
         return "instagram"
     elif "pinterest.com" in url_lower or "pin.it" in url_lower:
         return "pinterest"
@@ -96,27 +96,182 @@ def extract_urls(text: str) -> List[str]:
 # ==================== INSTAGRAM MULTI-LAYER SCRAPERS ====================
 def extract_instagram_shortcode(url: str) -> Optional[str]:
     """Extract Instagram post/reel shortcode from URL."""
-    match = re.search(r'(?:instagram\.com|instagr\.am)/(?:reel|p|tv|share/reel|share/p|share)/([a-zA-Z0-9_\-]+)', url)
+    match = re.search(r'(?:instagram\.com|instagr\.am|ig\.me)/(?:reels|reel|p|tv|share/reel|share/p|share)/([a-zA-Z0-9_\-]+)', url)
     if match:
         return match.group(1)
-    # Check general path
-    parts = url.strip("/").split("/")
-    if len(parts) >= 2 and parts[-2] in ["reel", "p", "tv"]:
-        return parts[-1].split("?")[0]
+    
+    # Strip query and trailing slashes
+    clean_url = url.split("?")[0].rstrip("/")
+    parts = clean_url.split("/")
+    if len(parts) >= 2 and parts[-2] in ["reel", "reels", "p", "tv"]:
+        return parts[-1]
+    return None
+
+def shortcode_to_media_id(shortcode: str) -> Optional[int]:
+    """Convert Instagram base64-like shortcode to numeric media ID."""
+    try:
+        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+        media_id = 0
+        for char in shortcode:
+            media_id = (media_id * 64) + alphabet.index(char)
+        return media_id
+    except Exception:
+        return None
+
+async def direct_instagram_graphql_scraper(url: str) -> Optional[Dict[str, Any]]:
+    """Query Instagram official Mobile / GraphQL endpoints using App-ID headers."""
+    shortcode = extract_instagram_shortcode(url)
+    if not shortcode:
+        return None
+
+    media_id = shortcode_to_media_id(shortcode)
+    urls_to_try = []
+    if media_id:
+        urls_to_try.append(f"https://www.instagram.com/api/v1/media/{media_id}/info/")
+    urls_to_try.append(f"https://www.instagram.com/p/{shortcode}/?__a=1&__d=dis")
+
+    headers = {
+        "User-Agent": "Instagram 319.0.0.39.112 Android (33/13; 420dpi; 1080x2400; samsung; SM-G991N; o1s; qcom)",
+        "X-IG-App-ID": "936619743392459",
+        "X-ASBD-ID": "129477",
+        "X-IG-WWW-Claim": "0",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Sec-Fetch-Site": "same-origin"
+    }
+
+    for target in urls_to_try:
+        try:
+            async with aiohttp.ClientSession(headers=headers) as session:
+                async with session.get(target, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if isinstance(data, dict):
+                            items = data.get("items", [])
+                            if not items and "graphql" in data:
+                                shortcode_media = data.get("graphql", {}).get("shortcode_media", {})
+                                if shortcode_media.get("is_video"):
+                                    return {
+                                        "status": "success",
+                                        "video_url": shortcode_media.get("video_url"),
+                                        "title": "Instagram Video",
+                                        "source": "instagram_graphql"
+                                    }
+                            if items:
+                                item = items[0]
+                                v_versions = item.get("video_versions", [])
+                                if v_versions:
+                                    best_v = sorted(v_versions, key=lambda x: x.get("height", 0), reverse=True)[0]
+                                    return {
+                                        "status": "success",
+                                        "video_url": best_v.get("url"),
+                                        "title": item.get("caption", {}).get("text", "Instagram Video") if isinstance(item.get("caption"), dict) else "Instagram Video",
+                                        "source": "instagram_mobile_api"
+                                    }
+        except Exception as e:
+            logger.warning(f"Instagram GraphQL/Mobile API error for {target}: {e}")
+    return None
+
+async def direct_instagram_ajax_scraper(url: str) -> Optional[Dict[str, Any]]:
+    """Scrape Instagram media via high-reliability public AJAX APIs."""
+    clean_url = url.split("?")[0]
+    
+    # 1. Try SaveIG / FastDL AJAX endpoint
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": "https://saveig.app/en"
+        }
+        data = {"q": clean_url, "t": "media", "lang": "en"}
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.post("https://saveig.app/api/ajaxSearch", data=data, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    json_data = await resp.json()
+                    html_content = json_data.get("data", "")
+                    if html_content:
+                        links = re.findall(r'href=["\'](https?://[^\s"\'<>]+)["\'][^>]*class=["\'][^"\']*abutton[^"\']*["\']', html_content)
+                        if not links:
+                            links = re.findall(r'href=["\'](https?://[^\s"\'<>]+download[^\s"\'<>]*)["\']', html_content)
+                        if not links:
+                            links = re.findall(r'https?://[^\s"\'<>]+\.mp4[^\s"\'<>]*', html_content)
+                        if links:
+                            v_url = links[0].replace("&amp;", "&")
+                            return {
+                                "status": "success",
+                                "video_url": v_url,
+                                "title": "Instagram Video",
+                                "source": "saveig_ajax"
+                            }
+    except Exception as e:
+        logger.warning(f"SaveIG AJAX scraper error: {e}")
+
+    # 2. Try SnapInsta AJAX endpoint
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Referer": "https://snapinsta.app/"
+        }
+        data = {"url": clean_url, "action": "post"}
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.post("https://snapinsta.app/action.php", data=data, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    html_content = await resp.text()
+                    links = re.findall(r'href=["\'](https?://[^\s"\'<>]+)["\'][^>]*download', html_content)
+                    if links:
+                        return {
+                            "status": "success",
+                            "video_url": links[0].replace("&amp;", "&"),
+                            "title": "Instagram Video",
+                            "source": "snapinsta_ajax"
+                        }
+    except Exception as e:
+        logger.warning(f"SnapInsta AJAX scraper error: {e}")
+
+    return None
+
+async def cobalt_instagram_scraper(url: str) -> Optional[Dict[str, Any]]:
+    """Query multi-instance Cobalt engine for Instagram links."""
+    instances = [
+        "https://co.wuk.sh/api/json",
+        "https://cobalt-api.kwiatekm.pl/api/json",
+        "https://api.cobalt.tools/api/json"
+    ]
+    for inst in instances:
+        try:
+            headers = {
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+            payload = {"url": url, "vQuality": "max"}
+            async with aiohttp.ClientSession(headers=headers) as session:
+                async with session.post(inst, json=payload, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                    if resp.status == 200:
+                        res = await resp.json()
+                        v_url = res.get("url")
+                        if v_url and v_url.startswith("http"):
+                            return {
+                                "status": "success",
+                                "video_url": v_url,
+                                "title": res.get("filename", "Instagram Video"),
+                                "source": "cobalt_api"
+                            }
+        except Exception:
+            continue
     return None
 
 async def direct_instagram_embed_scraper(url: str) -> Optional[Dict[str, Any]]:
-    """
-    Direct Embed Scraper: Instagram embed pages are 100% public and contain direct CDN video URLs.
-    Does NOT require login or cookies!
-    """
+    """Direct Embed Scraper: Instagram embed pages contain direct CDN video URLs."""
     shortcode = extract_instagram_shortcode(url)
     if not shortcode:
         return None
 
     embed_url = f"https://www.instagram.com/p/{shortcode}/embed/captioned/"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Sec-Fetch-Dest": "document",
@@ -129,17 +284,17 @@ async def direct_instagram_embed_scraper(url: str) -> Optional[Dict[str, Any]]:
                 if resp.status == 200:
                     html = await resp.text()
 
-                    # 1. Search for video tag src with class EmbeddedVideo
                     v_match = (
                         re.search(r'class=["\']EmbeddedVideo["\'][^>]*src=["\']([^"\']+)["\']', html) or
                         re.search(r'src=["\']([^"\']+)["\'][^>]*class=["\']EmbeddedVideo["\']', html) or
                         re.search(r'"video_url"\s*:\s*"([^"]+)"', html) or
                         re.search(r'video_url:\s*["\']([^"\']+)["\']', html) or
-                        re.search(r'"video_versions":\[\{"url":"([^"]+)"', html)
+                        re.search(r'"video_versions":\[\{"url":"([^"]+)"', html) or
+                        re.search(r'https?:\\/\\/[^\s"\'<>]+\.mp4[^\s"\'<>]*', html)
                     )
 
                     if v_match:
-                        clean_url = v_match.group(1).replace("&amp;", "&").replace(r"\/", "/")
+                        clean_url = v_match.group(1).replace("&amp;", "&").replace(r"\/", "/") if hasattr(v_match, 'group') and v_match.group(1) else v_match.group(0).replace(r"\/", "/").replace("&amp;", "&")
                         if clean_url.startswith("http"):
                             logger.info(f"✅ Instagram embed scraper success for shortcode {shortcode}")
                             return {
@@ -209,7 +364,6 @@ async def direct_facebook_scraper(url: str) -> Optional[Dict[str, Any]]:
                 if resp.status == 200:
                     html = await resp.text()
 
-                    # Search for HD or SD playable URLs
                     hd_match = re.search(r'"playable_url_quality_hd"\s*:\s*"([^"]+)"', html) or \
                                re.search(r'"browser_native_hd_url"\s*:\s*"([^"]+)"', html) or \
                                re.search(r'hd_src\s*:\s*"([^"]+)"', html)
@@ -270,7 +424,7 @@ async def direct_pinterest_scraper(url: str) -> Optional[Dict[str, Any]]:
 
 # ==================== PRIMARY API ENDPOINT ====================
 async def fetch_api_downloader(platform: str, url: str) -> Optional[Dict[str, Any]]:
-    """Query the primary render API endpoint."""
+    """Query the primary render API endpoint with extended timeout for cold boots."""
     api_base = API_ENDPOINTS.get(platform)
     if not api_base:
         return None
@@ -278,7 +432,7 @@ async def fetch_api_downloader(platform: str, url: str) -> Optional[Dict[str, An
     target_url = f"{api_base}{url}"
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(target_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            async with session.get(target_url, timeout=aiohttp.ClientTimeout(total=35)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     if isinstance(data, dict) and data.get("status") != "error":
@@ -296,7 +450,7 @@ async def fetch_api_downloader(platform: str, url: str) -> Optional[Dict[str, An
 
 # ==================== YT-DLP FALLBACK ENGINE ====================
 async def fallback_ytdlp_downloader(url: str, download_file: bool = True) -> Optional[Dict[str, Any]]:
-    """Fallback engine using yt-dlp with audio merge guarantee."""
+    """Fallback engine using yt-dlp with audio merge guarantee and Instagram extractor support."""
     loop = asyncio.get_event_loop()
     
     def run_yt_dlp():
@@ -313,12 +467,21 @@ async def fallback_ytdlp_downloader(url: str, download_file: bool = True) -> Opt
                 'merge_output_format': 'mp4',
                 'skip_download': not download_file,
                 'outtmpl': out_template,
+                'extractor_args': {
+                    'instagram': {'player_client': ['ios', 'android', 'web']}
+                },
                 'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
                     'Accept-Language': 'en-US,en;q=0.9'
                 }
             }
             
+            # Check for local cookie files if present
+            for c_file in ["cookies.txt", "instagram_cookies.txt", "insta_cookies.txt", os.getenv("COOKIES_FILE", "")]:
+                if c_file and os.path.exists(c_file):
+                    ydl_opts['cookiefile'] = c_file
+                    break
+
             if is_ffmpeg_available() and download_file:
                 ydl_opts['postprocessors'] = [{
                     'key': 'FFmpegVideoRemuxer',
@@ -431,7 +594,52 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
 
     # ---------------- 1. INSTAGRAM PIPELINE ----------------
     if platform == "instagram":
-        # A. Try Direct Embed Scraper (Fastest, never rate-limited)
+        # A. Direct GraphQL / Mobile API Scraper
+        insta_gql_res = await direct_instagram_graphql_scraper(expanded_url)
+        if insta_gql_res and insta_gql_res.get("video_url"):
+            raw_target = os.path.join(temp_dir, f"insta_gql_{int(time.time())}.mp4")
+            if await download_url_to_file(insta_gql_res["video_url"], raw_target):
+                play_target = os.path.join(temp_dir, f"insta_play_{int(time.time())}.mp4")
+                if await ensure_playable_video(raw_target, play_target):
+                    try: os.remove(raw_target)
+                    except Exception: pass
+                    insta_gql_res["local_file"] = play_target
+                else:
+                    insta_gql_res["local_file"] = raw_target
+                insta_gql_res["platform"] = platform
+                return insta_gql_res
+
+        # B. Direct Public AJAX Scraper (SaveIG / SnapInsta)
+        insta_ajax_res = await direct_instagram_ajax_scraper(expanded_url)
+        if insta_ajax_res and insta_ajax_res.get("video_url"):
+            raw_target = os.path.join(temp_dir, f"insta_ajax_{int(time.time())}.mp4")
+            if await download_url_to_file(insta_ajax_res["video_url"], raw_target):
+                play_target = os.path.join(temp_dir, f"insta_play_{int(time.time())}.mp4")
+                if await ensure_playable_video(raw_target, play_target):
+                    try: os.remove(raw_target)
+                    except Exception: pass
+                    insta_ajax_res["local_file"] = play_target
+                else:
+                    insta_ajax_res["local_file"] = raw_target
+                insta_ajax_res["platform"] = platform
+                return insta_ajax_res
+
+        # C. Multi-Instance Cobalt Scraper
+        insta_cobalt_res = await cobalt_instagram_scraper(expanded_url)
+        if insta_cobalt_res and insta_cobalt_res.get("video_url"):
+            raw_target = os.path.join(temp_dir, f"insta_cobalt_{int(time.time())}.mp4")
+            if await download_url_to_file(insta_cobalt_res["video_url"], raw_target):
+                play_target = os.path.join(temp_dir, f"insta_play_{int(time.time())}.mp4")
+                if await ensure_playable_video(raw_target, play_target):
+                    try: os.remove(raw_target)
+                    except Exception: pass
+                    insta_cobalt_res["local_file"] = play_target
+                else:
+                    insta_cobalt_res["local_file"] = raw_target
+                insta_cobalt_res["platform"] = platform
+                return insta_cobalt_res
+
+        # D. Direct Embed Scraper
         insta_res = await direct_instagram_embed_scraper(expanded_url)
         if insta_res and insta_res.get("video_url"):
             raw_target = os.path.join(temp_dir, f"insta_raw_{int(time.time())}.mp4")
@@ -446,7 +654,7 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
                 insta_res["platform"] = platform
                 return insta_res
 
-        # B. Try Direct Info API Scraper
+        # E. Direct Info API Scraper
         insta_api_res = await direct_instagram_api_scraper(expanded_url)
         if insta_api_res and insta_api_res.get("video_url"):
             raw_target = os.path.join(temp_dir, f"insta_api_{int(time.time())}.mp4")
@@ -614,7 +822,6 @@ async def convert_video_media(
 
         ffmpeg_bin = get_ffmpeg_binary()
 
-        # Clean, standard FFmpeg scale filters
         filter_map = {
             "2160p": "scale=-2:2160",
             "1080p": "scale=-2:1080",
