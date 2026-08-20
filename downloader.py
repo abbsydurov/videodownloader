@@ -726,6 +726,30 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
 
     # ---------------- 1. INSTAGRAM PIPELINE ----------------
     if platform == "instagram":
+        # A. Try User's Primary Render API First (https://api-owner-2.onrender.com/insta?video=)
+        primary_res = await fetch_api_downloader(platform, expanded_url)
+        if primary_res and (primary_res.get("video_url") or primary_res.get("image_url")):
+            if primary_res.get("image_url") and not primary_res.get("video_url"):
+                raw_target = os.path.join(temp_dir, f"insta_img_{int(time.time())}.jpg")
+                if await download_url_to_file(primary_res["image_url"], raw_target):
+                    primary_res["local_file"] = raw_target
+                primary_res["platform"] = platform
+                return primary_res
+            elif primary_res.get("video_url"):
+                v_url = primary_res["video_url"]
+                raw_target = os.path.join(temp_dir, f"insta_raw_{int(time.time())}.mp4")
+                if await download_url_to_file(v_url, raw_target):
+                    play_target = os.path.join(temp_dir, f"insta_play_{int(time.time())}.mp4")
+                    if await ensure_playable_video(raw_target, play_target):
+                        try: os.remove(raw_target)
+                        except Exception: pass
+                        primary_res["local_file"] = play_target
+                    else:
+                        primary_res["local_file"] = raw_target
+                    primary_res["platform"] = platform
+                    return primary_res
+
+        # B. If Primary API returns error or fails, fallback to multi-layer scrapers
         scrapers = [
             direct_instagram_graphql_scraper,
             direct_instagram_ajax_scraper,
