@@ -55,10 +55,12 @@ def is_ffmpeg_available() -> bool:
 
 async def expand_short_url(url: str) -> str:
     """Expand shortened social links (e.g. pin.it, fb.watch, instagram share links)."""
+    # Clean bracket artifacts from forwarded markdown
+    url = url.strip().strip("[]()<>\"'")
     if any(k in url for k in ["pin.it", "fb.watch", "bit.ly", "t.co", "/share/", "ig.me"]):
         try:
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.9"
             }
@@ -84,23 +86,27 @@ def detect_platform(url: str) -> Optional[str]:
     return None
 
 def extract_urls(text: str) -> List[str]:
-    """Extract all valid social media URLs from message text."""
+    """Extract all valid social media URLs from message text with markdown & bracket cleaning."""
     urls = []
-    raw_urls = re.findall(r'https?://[^\s]+', text)
+    # Replace markdown link characters and brackets with spaces so URLs are extracted cleanly
+    clean_text = text.replace("[", " ").replace("]", " ").replace("(", " ").replace(")", " ").replace("<", " ").replace(">", " ")
+    raw_urls = re.findall(r'https?://[^\s\'"<>\[\]\(\)]+', clean_text)
     for u in raw_urls:
+        u = u.strip().rstrip(".,;!?:")
         p = detect_platform(u)
-        if p:
+        if p and u not in urls:
             urls.append(u)
     return urls
 
 # ==================== INSTAGRAM MULTI-LAYER SCRAPERS ====================
 def extract_instagram_shortcode(url: str) -> Optional[str]:
     """Extract Instagram post/reel shortcode from URL."""
+    # Clean brackets/quotes
+    url = url.strip().strip("[]()<>\"'")
     match = re.search(r'(?:instagram\.com|instagr\.am|ig\.me)/(?:reels|reel|p|tv|share/reel|share/p|share)/([a-zA-Z0-9_\-]+)', url)
     if match:
         return match.group(1)
     
-    # Strip query and trailing slashes
     clean_url = url.split("?")[0].rstrip("/")
     parts = clean_url.split("/")
     if len(parts) >= 2 and parts[-2] in ["reel", "reels", "p", "tv"]:
@@ -119,7 +125,7 @@ def shortcode_to_media_id(shortcode: str) -> Optional[int]:
         return None
 
 async def direct_instagram_graphql_scraper(url: str) -> Optional[Dict[str, Any]]:
-    """Query Instagram official Mobile / GraphQL endpoints using App-ID headers."""
+    """Query Instagram official Mobile / GraphQL endpoints using App-ID headers supporting Photos, Videos, and Carousels."""
     shortcode = extract_instagram_shortcode(url)
     if not shortcode:
         return None
@@ -143,37 +149,96 @@ async def direct_instagram_graphql_scraper(url: str) -> Optional[Dict[str, Any]]
     for target in urls_to_try:
         try:
             async with aiohttp.ClientSession(headers=headers) as session:
-                async with session.get(target, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                async with session.get(target, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         if isinstance(data, dict):
                             items = data.get("items", [])
                             if not items and "graphql" in data:
                                 shortcode_media = data.get("graphql", {}).get("shortcode_media", {})
-                                if shortcode_media.get("is_video"):
+                                is_vid = shortcode_media.get("is_video", False)
+                                if is_vid:
                                     return {
                                         "status": "success",
+                                        "media_type": "video",
                                         "video_url": shortcode_media.get("video_url"),
                                         "title": "Instagram Video",
                                         "source": "instagram_graphql"
                                     }
+                                else:
+                                    img_url = shortcode_media.get("display_url")
+                                    if img_url:
+                                        return {
+                                            "status": "success",
+                                            "media_type": "photo",
+                                            "image_url": img_url,
+                                            "title": "Instagram Photo",
+                                            "source": "instagram_graphql"
+                                        }
+
                             if items:
                                 item = items[0]
-                                v_versions = item.get("video_versions", [])
-                                if v_versions:
-                                    best_v = sorted(v_versions, key=lambda x: x.get("height", 0), reverse=True)[0]
-                                    return {
-                                        "status": "success",
-                                        "video_url": best_v.get("url"),
-                                        "title": item.get("caption", {}).get("text", "Instagram Video") if isinstance(item.get("caption"), dict) else "Instagram Video",
-                                        "source": "instagram_mobile_api"
-                                    }
+                                caption = "Instagram Media"
+                                if isinstance(item.get("caption"), dict):
+                                    caption = item.get("caption", {}).get("text", "Instagram Media")
+                                
+                                media_type = item.get("media_type") # 1 = Photo, 2 = Video, 8 = Carousel
+
+                                # 1. Video Post
+                                if media_type == 2 or item.get("video_versions"):
+                                    v_versions = item.get("video_versions", [])
+                                    if v_versions:
+                                        best_v = sorted(v_versions, key=lambda x: x.get("height", 0), reverse=True)[0]
+                                        return {
+                                            "status": "success",
+                                            "media_type": "video",
+                                            "video_url": best_v.get("url"),
+                                            "title": caption,
+                                            "source": "instagram_mobile_api"
+                                        }
+
+                                # 2. Carousel / Sidecar Post (Multiple Photos & Videos)
+                                elif media_type == 8 and item.get("carousel_media"):
+                                    media_list = []
+                                    for c in item["carousel_media"]:
+                                        if c.get("video_versions"):
+                                            best_c_v = sorted(c["video_versions"], key=lambda x: x.get("height", 0), reverse=True)[0]
+                                            media_list.append({"type": "video", "url": best_c_v.get("url")})
+                                        elif c.get("image_versions2", {}).get("candidates"):
+                                            c_cands = c["image_versions2"]["candidates"]
+                                            best_c_img = sorted(c_cands, key=lambda x: x.get("height", 0), reverse=True)[0]
+                                            media_list.append({"type": "photo", "url": best_c_img.get("url")})
+                                    
+                                    if media_list:
+                                        first_item = media_list[0]
+                                        return {
+                                            "status": "success",
+                                            "media_type": "carousel" if len(media_list) > 1 else first_item["type"],
+                                            "media_list": media_list,
+                                            "video_url": first_item["url"] if first_item["type"] == "video" else None,
+                                            "image_url": first_item["url"] if first_item["type"] == "photo" else None,
+                                            "title": caption,
+                                            "source": "instagram_mobile_api"
+                                        }
+
+                                # 3. Single Photo Post
+                                elif media_type == 1 or item.get("image_versions2"):
+                                    cands = item.get("image_versions2", {}).get("candidates", [])
+                                    if cands:
+                                        best_img = sorted(cands, key=lambda x: x.get("height", 0), reverse=True)[0]
+                                        return {
+                                            "status": "success",
+                                            "media_type": "photo",
+                                            "image_url": best_img.get("url"),
+                                            "title": caption,
+                                            "source": "instagram_mobile_api"
+                                        }
         except Exception as e:
             logger.warning(f"Instagram GraphQL/Mobile API error for {target}: {e}")
     return None
 
 async def direct_instagram_ajax_scraper(url: str) -> Optional[Dict[str, Any]]:
-    """Scrape Instagram media via high-reliability public AJAX APIs."""
+    """Scrape Instagram media via high-reliability public AJAX APIs for both Photos and Videos."""
     clean_url = url.split("?")[0]
     
     # 1. Try SaveIG / FastDL AJAX endpoint
@@ -191,17 +256,31 @@ async def direct_instagram_ajax_scraper(url: str) -> Optional[Dict[str, Any]]:
                     json_data = await resp.json()
                     html_content = json_data.get("data", "")
                     if html_content:
-                        links = re.findall(r'href=["\'](https?://[^\s"\'<>]+)["\'][^>]*class=["\'][^"\']*abutton[^"\']*["\']', html_content)
-                        if not links:
-                            links = re.findall(r'href=["\'](https?://[^\s"\'<>]+download[^\s"\'<>]*)["\']', html_content)
-                        if not links:
-                            links = re.findall(r'https?://[^\s"\'<>]+\.mp4[^\s"\'<>]*', html_content)
-                        if links:
-                            v_url = links[0].replace("&amp;", "&")
+                        # Search for video URLs first
+                        v_links = re.findall(r'href=["\'](https?://[^\s"\'<>]+)["\'][^>]*class=["\'][^"\']*abutton[^"\']*["\']', html_content)
+                        if not v_links:
+                            v_links = re.findall(r'href=["\'](https?://[^\s"\'<>]+download[^\s"\'<>]*)["\']', html_content)
+                        if not v_links:
+                            v_links = re.findall(r'https?://[^\s"\'<>]+\.mp4[^\s"\'<>]*', html_content)
+                        
+                        if v_links:
                             return {
                                 "status": "success",
-                                "video_url": v_url,
+                                "media_type": "video",
+                                "video_url": v_links[0].replace("&amp;", "&"),
                                 "title": "Instagram Video",
+                                "source": "saveig_ajax"
+                            }
+                        
+                        # Search for photo download links if not video
+                        img_links = re.findall(r'href=["\'](https?://[^\s"\'<>]+\.(?:jpg|jpeg|webp|png)[^\s"\'<>]*)["\']', html_content) or \
+                                    re.findall(r'src=["\'](https?://[^\s"\'<>]+\.(?:jpg|jpeg|webp|png)[^\s"\'<>]*)["\']', html_content)
+                        if img_links:
+                            return {
+                                "status": "success",
+                                "media_type": "photo",
+                                "image_url": img_links[0].replace("&amp;", "&"),
+                                "title": "Instagram Photo",
                                 "source": "saveig_ajax"
                             }
     except Exception as e:
@@ -221,10 +300,14 @@ async def direct_instagram_ajax_scraper(url: str) -> Optional[Dict[str, Any]]:
                     html_content = await resp.text()
                     links = re.findall(r'href=["\'](https?://[^\s"\'<>]+)["\'][^>]*download', html_content)
                     if links:
+                        link_url = links[0].replace("&amp;", "&")
+                        is_img = any(ext in link_url.lower() for ext in [".jpg", ".jpeg", ".png", ".webp"])
                         return {
                             "status": "success",
-                            "video_url": links[0].replace("&amp;", "&"),
-                            "title": "Instagram Video",
+                            "media_type": "photo" if is_img else "video",
+                            "video_url": None if is_img else link_url,
+                            "image_url": link_url if is_img else None,
+                            "title": "Instagram Media",
                             "source": "snapinsta_ajax"
                         }
     except Exception as e:
@@ -255,6 +338,7 @@ async def cobalt_instagram_scraper(url: str) -> Optional[Dict[str, Any]]:
                         if v_url and v_url.startswith("http"):
                             return {
                                 "status": "success",
+                                "media_type": "video",
                                 "video_url": v_url,
                                 "title": res.get("filename", "Instagram Video"),
                                 "source": "cobalt_api"
@@ -264,7 +348,7 @@ async def cobalt_instagram_scraper(url: str) -> Optional[Dict[str, Any]]:
     return None
 
 async def direct_instagram_embed_scraper(url: str) -> Optional[Dict[str, Any]]:
-    """Direct Embed Scraper: Instagram embed pages contain direct CDN video URLs."""
+    """Direct Embed Scraper: Instagram embed pages contain direct CDN video or photo URLs."""
     shortcode = extract_instagram_shortcode(url)
     if not shortcode:
         return None
@@ -284,6 +368,7 @@ async def direct_instagram_embed_scraper(url: str) -> Optional[Dict[str, Any]]:
                 if resp.status == 200:
                     html = await resp.text()
 
+                    # 1. Search for video tag
                     v_match = (
                         re.search(r'class=["\']EmbeddedVideo["\'][^>]*src=["\']([^"\']+)["\']', html) or
                         re.search(r'src=["\']([^"\']+)["\'][^>]*class=["\']EmbeddedVideo["\']', html) or
@@ -299,8 +384,24 @@ async def direct_instagram_embed_scraper(url: str) -> Optional[Dict[str, Any]]:
                             logger.info(f"✅ Instagram embed scraper success for shortcode {shortcode}")
                             return {
                                 "status": "success",
+                                "media_type": "video",
                                 "video_url": clean_url,
                                 "title": "Instagram Video",
+                                "source": "instagram_embed"
+                            }
+                    
+                    # 2. Search for photo image tag in embed
+                    img_match = re.search(r'class=["\']EmbeddedMediaImage["\'][^>]*src=["\']([^"\']+)["\']', html) or \
+                                re.search(r'src=["\']([^"\']+)["\'][^>]*class=["\']EmbeddedMediaImage["\']', html) or \
+                                re.search(r'"display_url"\s*:\s*"([^"]+)"', html)
+                    if img_match:
+                        clean_img = img_match.group(1).replace("&amp;", "&").replace(r"\/", "/")
+                        if clean_img.startswith("http"):
+                            return {
+                                "status": "success",
+                                "media_type": "photo",
+                                "image_url": clean_img,
+                                "title": "Instagram Photo",
                                 "source": "instagram_embed"
                             }
     except Exception as e:
@@ -329,13 +430,25 @@ async def direct_instagram_api_scraper(url: str) -> Optional[Dict[str, Any]]:
                         items = data.get("items", [])
                         if items:
                             item = items[0]
+                            caption = item.get("caption", {}).get("text", "Instagram Media") if isinstance(item.get("caption"), dict) else "Instagram Media"
                             v_versions = item.get("video_versions", [])
                             if v_versions:
                                 best_v = sorted(v_versions, key=lambda x: x.get("height", 0), reverse=True)[0]
                                 return {
                                     "status": "success",
+                                    "media_type": "video",
                                     "video_url": best_v.get("url"),
-                                    "title": item.get("caption", {}).get("text", "Instagram Video") if isinstance(item.get("caption"), dict) else "Instagram Video",
+                                    "title": caption,
+                                    "source": "instagram_api"
+                                }
+                            cands = item.get("image_versions2", {}).get("candidates", [])
+                            if cands:
+                                best_img = sorted(cands, key=lambda x: x.get("height", 0), reverse=True)[0]
+                                return {
+                                    "status": "success",
+                                    "media_type": "photo",
+                                    "image_url": best_img.get("url"),
+                                    "title": caption,
                                     "source": "instagram_api"
                                 }
     except Exception as e:
@@ -382,6 +495,7 @@ async def direct_facebook_scraper(url: str) -> Optional[Dict[str, Any]]:
 
                         return {
                             "status": "success",
+                            "media_type": "video",
                             "video_url": chosen_url,
                             "hd_url": hd_url or chosen_url,
                             "sd_url": sd_url or chosen_url,
@@ -394,7 +508,7 @@ async def direct_facebook_scraper(url: str) -> Optional[Dict[str, Any]]:
 
 # ==================== PINTEREST DIRECT SCRAPER ====================
 async def direct_pinterest_scraper(url: str) -> Optional[Dict[str, Any]]:
-    """Direct scraper for Pinterest video streams."""
+    """Direct scraper for Pinterest video and photo streams."""
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -414,8 +528,21 @@ async def direct_pinterest_scraper(url: str) -> Optional[Dict[str, Any]]:
                                 break
                         return {
                             "status": "success",
+                            "media_type": "video",
                             "video_url": best_mp4,
                             "title": "Pinterest Video",
+                            "source": "pinterest_direct_scraper"
+                        }
+                    
+                    # Search for high res pinterest image
+                    img_matches = re.findall(r'https?://i\.pinimg\.com/originals/[^\s"\'<>]+\.(?:jpg|png|jpeg|webp)', html) or \
+                                  re.findall(r'https?://i\.pinimg\.com/736x/[^\s"\'<>]+\.(?:jpg|png|jpeg|webp)', html)
+                    if img_matches:
+                        return {
+                            "status": "success",
+                            "media_type": "photo",
+                            "image_url": img_matches[0],
+                            "title": "Pinterest Photo",
                             "source": "pinterest_direct_scraper"
                         }
     except Exception as e:
@@ -429,19 +556,23 @@ async def fetch_api_downloader(platform: str, url: str) -> Optional[Dict[str, An
     if not api_base:
         return None
     
-    target_url = f"{api_base}{url}"
+    clean_target = url.split("?")[0] if platform == "instagram" else url
+    target_url = f"{api_base}{clean_target}"
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(target_url, timeout=aiohttp.ClientTimeout(total=35)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     if isinstance(data, dict) and data.get("status") != "error":
-                        media_url = data.get("video_url") or data.get("url") or data.get("video") or data.get("download_url") or data.get("data")
+                        media_url = data.get("video_url") or data.get("url") or data.get("video") or data.get("download_url") or data.get("data") or data.get("image_url") or data.get("image")
                         if media_url and isinstance(media_url, str) and media_url.startswith("http"):
+                            is_img = any(ext in media_url.lower() for ext in [".jpg", ".jpeg", ".png", ".webp"])
                             return {
                                 "status": "success",
-                                "video_url": media_url,
-                                "title": data.get("title", f"{platform.title()} Video"),
+                                "media_type": "photo" if is_img else "video",
+                                "video_url": None if is_img else media_url,
+                                "image_url": media_url if is_img else None,
+                                "title": data.get("title", f"{platform.title()} Media"),
                                 "thumbnail": data.get("thumbnail") or data.get("thumb")
                             }
     except Exception as e:
@@ -532,6 +663,7 @@ async def fallback_ytdlp_downloader(url: str, download_file: bool = True) -> Opt
                 
                 return {
                     "status": "success",
+                    "media_type": "video",
                     "video_url": video_url,
                     "hd_url": hd_url or video_url,
                     "sd_url": sd_url or video_url,
@@ -581,8 +713,8 @@ async def ensure_playable_video(input_path: str, output_path: str) -> bool:
 # ==================== UNIFIED DOWNLOADER ENTRYPOINT ====================
 async def download_media(url: str, force_local_download: bool = True) -> Dict[str, Any]:
     """
-    Unified Downloader Pipeline supporting Instagram (Reels/Posts/Stories),
-    Pinterest (Pins/Clips), Facebook (Reels/Watch), and Snapchat.
+    Unified Downloader Pipeline supporting Instagram (Reels/Posts/Stories/Photos/Carousels),
+    Pinterest (Pins/Clips/Photos), Facebook (Reels/Watch), and Snapchat.
     """
     expanded_url = await expand_short_url(url)
     platform = detect_platform(expanded_url) or detect_platform(url)
@@ -594,80 +726,46 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
 
     # ---------------- 1. INSTAGRAM PIPELINE ----------------
     if platform == "instagram":
-        # A. Direct GraphQL / Mobile API Scraper
-        insta_gql_res = await direct_instagram_graphql_scraper(expanded_url)
-        if insta_gql_res and insta_gql_res.get("video_url"):
-            raw_target = os.path.join(temp_dir, f"insta_gql_{int(time.time())}.mp4")
-            if await download_url_to_file(insta_gql_res["video_url"], raw_target):
-                play_target = os.path.join(temp_dir, f"insta_play_{int(time.time())}.mp4")
-                if await ensure_playable_video(raw_target, play_target):
-                    try: os.remove(raw_target)
-                    except Exception: pass
-                    insta_gql_res["local_file"] = play_target
-                else:
-                    insta_gql_res["local_file"] = raw_target
-                insta_gql_res["platform"] = platform
-                return insta_gql_res
+        scrapers = [
+            direct_instagram_graphql_scraper,
+            direct_instagram_ajax_scraper,
+            cobalt_instagram_scraper,
+            direct_instagram_embed_scraper,
+            direct_instagram_api_scraper
+        ]
 
-        # B. Direct Public AJAX Scraper (SaveIG / SnapInsta)
-        insta_ajax_res = await direct_instagram_ajax_scraper(expanded_url)
-        if insta_ajax_res and insta_ajax_res.get("video_url"):
-            raw_target = os.path.join(temp_dir, f"insta_ajax_{int(time.time())}.mp4")
-            if await download_url_to_file(insta_ajax_res["video_url"], raw_target):
-                play_target = os.path.join(temp_dir, f"insta_play_{int(time.time())}.mp4")
-                if await ensure_playable_video(raw_target, play_target):
-                    try: os.remove(raw_target)
-                    except Exception: pass
-                    insta_ajax_res["local_file"] = play_target
-                else:
-                    insta_ajax_res["local_file"] = raw_target
-                insta_ajax_res["platform"] = platform
-                return insta_ajax_res
-
-        # C. Multi-Instance Cobalt Scraper
-        insta_cobalt_res = await cobalt_instagram_scraper(expanded_url)
-        if insta_cobalt_res and insta_cobalt_res.get("video_url"):
-            raw_target = os.path.join(temp_dir, f"insta_cobalt_{int(time.time())}.mp4")
-            if await download_url_to_file(insta_cobalt_res["video_url"], raw_target):
-                play_target = os.path.join(temp_dir, f"insta_play_{int(time.time())}.mp4")
-                if await ensure_playable_video(raw_target, play_target):
-                    try: os.remove(raw_target)
-                    except Exception: pass
-                    insta_cobalt_res["local_file"] = play_target
-                else:
-                    insta_cobalt_res["local_file"] = raw_target
-                insta_cobalt_res["platform"] = platform
-                return insta_cobalt_res
-
-        # D. Direct Embed Scraper
-        insta_res = await direct_instagram_embed_scraper(expanded_url)
-        if insta_res and insta_res.get("video_url"):
-            raw_target = os.path.join(temp_dir, f"insta_raw_{int(time.time())}.mp4")
-            if await download_url_to_file(insta_res["video_url"], raw_target):
-                play_target = os.path.join(temp_dir, f"insta_play_{int(time.time())}.mp4")
-                if await ensure_playable_video(raw_target, play_target):
-                    try: os.remove(raw_target)
-                    except Exception: pass
-                    insta_res["local_file"] = play_target
-                else:
-                    insta_res["local_file"] = raw_target
-                insta_res["platform"] = platform
-                return insta_res
-
-        # E. Direct Info API Scraper
-        insta_api_res = await direct_instagram_api_scraper(expanded_url)
-        if insta_api_res and insta_api_res.get("video_url"):
-            raw_target = os.path.join(temp_dir, f"insta_api_{int(time.time())}.mp4")
-            if await download_url_to_file(insta_api_res["video_url"], raw_target):
-                play_target = os.path.join(temp_dir, f"insta_play_{int(time.time())}.mp4")
-                if await ensure_playable_video(raw_target, play_target):
-                    try: os.remove(raw_target)
-                    except Exception: pass
-                    insta_api_res["local_file"] = play_target
-                else:
-                    insta_api_res["local_file"] = raw_target
-                insta_api_res["platform"] = platform
-                return insta_api_res
+        for scraper in scrapers:
+            try:
+                res = await scraper(expanded_url)
+                if res and res.get("status") == "success":
+                    res["platform"] = platform
+                    
+                    # Handle Photo
+                    if res.get("media_type") == "photo" and res.get("image_url"):
+                        raw_target = os.path.join(temp_dir, f"insta_img_{int(time.time())}.jpg")
+                        if await download_url_to_file(res["image_url"], raw_target):
+                            res["local_file"] = raw_target
+                        return res
+                    
+                    # Handle Carousel
+                    elif res.get("media_type") == "carousel" and res.get("media_list"):
+                        return res
+                    
+                    # Handle Video
+                    elif res.get("video_url"):
+                        raw_target = os.path.join(temp_dir, f"insta_raw_{int(time.time())}.mp4")
+                        if await download_url_to_file(res["video_url"], raw_target):
+                            play_target = os.path.join(temp_dir, f"insta_play_{int(time.time())}.mp4")
+                            if await ensure_playable_video(raw_target, play_target):
+                                try: os.remove(raw_target)
+                                except Exception: pass
+                                res["local_file"] = play_target
+                            else:
+                                res["local_file"] = raw_target
+                        return res
+            except Exception as scraper_err:
+                logger.warning(f"Instagram scraper {scraper.__name__} error: {scraper_err}")
+                continue
 
     # ---------------- 2. FACEBOOK PIPELINE ----------------
     if platform == "facebook":
@@ -688,17 +786,23 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
     # ---------------- 3. PINTEREST PIPELINE ----------------
     if platform == "pinterest":
         pin_res = await direct_pinterest_scraper(expanded_url)
-        if pin_res and pin_res.get("video_url"):
-            raw_target = os.path.join(temp_dir, f"pin_raw_{int(time.time())}.mp4")
-            if await download_url_to_file(pin_res["video_url"], raw_target):
-                play_target = os.path.join(temp_dir, f"pin_play_{int(time.time())}.mp4")
-                if await ensure_playable_video(raw_target, play_target):
-                    try: os.remove(raw_target)
-                    except Exception: pass
-                    pin_res["local_file"] = play_target
-                else:
+        if pin_res and pin_res.get("status") == "success":
+            pin_res["platform"] = platform
+            if pin_res.get("media_type") == "photo" and pin_res.get("image_url"):
+                raw_target = os.path.join(temp_dir, f"pin_img_{int(time.time())}.jpg")
+                if await download_url_to_file(pin_res["image_url"], raw_target):
                     pin_res["local_file"] = raw_target
-                pin_res["platform"] = platform
+                return pin_res
+            elif pin_res.get("video_url"):
+                raw_target = os.path.join(temp_dir, f"pin_raw_{int(time.time())}.mp4")
+                if await download_url_to_file(pin_res["video_url"], raw_target):
+                    play_target = os.path.join(temp_dir, f"pin_play_{int(time.time())}.mp4")
+                    if await ensure_playable_video(raw_target, play_target):
+                        try: os.remove(raw_target)
+                        except Exception: pass
+                        pin_res["local_file"] = play_target
+                    else:
+                        pin_res["local_file"] = raw_target
                 return pin_res
 
     # ---------------- 4. YT-DLP ENGINE (ALL PLATFORMS) ----------------
@@ -715,19 +819,26 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
 
     # ---------------- 5. PRIMARY RENDER API FALLBACK ----------------
     primary_res = await fetch_api_downloader(platform, expanded_url)
-    if primary_res and primary_res.get("video_url"):
-        v_url = primary_res["video_url"]
-        raw_target = os.path.join(temp_dir, f"api_raw_{int(time.time())}.mp4")
-        if await download_url_to_file(v_url, raw_target):
-            play_target = os.path.join(temp_dir, f"api_play_{int(time.time())}.mp4")
-            if await ensure_playable_video(raw_target, play_target):
-                try: os.remove(raw_target)
-                except Exception: pass
-                primary_res["local_file"] = play_target
-            else:
+    if primary_res and (primary_res.get("video_url") or primary_res.get("image_url")):
+        if primary_res.get("image_url"):
+            raw_target = os.path.join(temp_dir, f"api_img_{int(time.time())}.jpg")
+            if await download_url_to_file(primary_res["image_url"], raw_target):
                 primary_res["local_file"] = raw_target
             primary_res["platform"] = platform
             return primary_res
+        elif primary_res.get("video_url"):
+            v_url = primary_res["video_url"]
+            raw_target = os.path.join(temp_dir, f"api_raw_{int(time.time())}.mp4")
+            if await download_url_to_file(v_url, raw_target):
+                play_target = os.path.join(temp_dir, f"api_play_{int(time.time())}.mp4")
+                if await ensure_playable_video(raw_target, play_target):
+                    try: os.remove(raw_target)
+                    except Exception: pass
+                    primary_res["local_file"] = play_target
+                else:
+                    primary_res["local_file"] = raw_target
+                primary_res["platform"] = platform
+                return primary_res
 
     # ---------------- 6. STREAM URL FALLBACK ----------------
     if fallback_res and fallback_res.get("video_url"):
@@ -747,7 +858,7 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
     return {
         "status": "error",
         "platform": platform,
-        "message": f"Unable to fetch video from {platform.title()}. Please verify if the post is public."
+        "message": f"Unable to fetch media from {platform.title()}. Please verify if the post is public."
     }
 
 async def download_file_to_bytes(url: str) -> Optional[bytes]:
@@ -768,7 +879,7 @@ async def download_url_to_file(url: str, output_path: str) -> bool:
     """Download direct URL stream into local file with headers & verification."""
     try:
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Referer": "https://www.google.com/"
         }
         async with aiohttp.ClientSession(headers=headers) as session:
