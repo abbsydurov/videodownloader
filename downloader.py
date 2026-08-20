@@ -12,7 +12,7 @@ from typing import Dict, Any, Optional, List, Tuple
 from config import API_ENDPOINTS, logger
 
 # URL Regex Patterns
-INSTAGRAM_PATTERN = re.compile(r'(https?://(?:www\.)?instagram\.com/(?:p|reel|tv|stories|share)/[a-zA-Z0-9_\-\.]+)')
+INSTAGRAM_PATTERN = re.compile(r'(https?://(?:www\.)?(?:instagram\.com|instagr\.am)/(?:p|reel|tv|stories|share/reel|share/p|share)/[a-zA-Z0-9_\-\.]+)')
 PINTEREST_PATTERN = re.compile(r'(https?://(?:www\.)?(?:pinterest\.com/pin/|pin\.it/)[a-zA-Z0-9_\-\.]+)')
 SNAPCHAT_PATTERN = re.compile(r'(https?://(?:www\.)?snapchat\.com/(?:t|p|spotlight|add)/[a-zA-Z0-9_\-\.]+)')
 FACEBOOK_PATTERN = re.compile(r'(https?://(?:www\.)?(?:facebook\.com|fb\.watch|fb\.com|m\.facebook\.com)/(?:reel|videos|watch|share|story\.php|ads|posts)/[a-zA-Z0-9_\-\.\?=/]+)')
@@ -54,11 +54,11 @@ def is_ffmpeg_available() -> bool:
         return False
 
 async def expand_short_url(url: str) -> str:
-    """Expand shortened social links (e.g. fb.watch, facebook.com/share, pin.it)."""
+    """Expand shortened social links (e.g. pin.it, fb.watch, instagram share links)."""
     if any(k in url for k in ["pin.it", "fb.watch", "bit.ly", "t.co", "/share/"]):
         try:
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.9"
             }
@@ -93,6 +93,101 @@ def extract_urls(text: str) -> List[str]:
             urls.append(u)
     return urls
 
+# ==================== INSTAGRAM MULTI-LAYER SCRAPERS ====================
+def extract_instagram_shortcode(url: str) -> Optional[str]:
+    """Extract Instagram post/reel shortcode from URL."""
+    match = re.search(r'(?:instagram\.com|instagr\.am)/(?:reel|p|tv|share/reel|share/p|share)/([a-zA-Z0-9_\-]+)', url)
+    if match:
+        return match.group(1)
+    # Check general path
+    parts = url.strip("/").split("/")
+    if len(parts) >= 2 and parts[-2] in ["reel", "p", "tv"]:
+        return parts[-1].split("?")[0]
+    return None
+
+async def direct_instagram_embed_scraper(url: str) -> Optional[Dict[str, Any]]:
+    """
+    Direct Embed Scraper: Instagram embed pages are 100% public and contain direct CDN video URLs.
+    Does NOT require login or cookies!
+    """
+    shortcode = extract_instagram_shortcode(url)
+    if not shortcode:
+        return None
+
+    embed_url = f"https://www.instagram.com/p/{shortcode}/embed/captioned/"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none"
+    }
+    try:
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.get(embed_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    html = await resp.text()
+
+                    # 1. Search for video tag src with class EmbeddedVideo
+                    v_match = (
+                        re.search(r'class=["\']EmbeddedVideo["\'][^>]*src=["\']([^"\']+)["\']', html) or
+                        re.search(r'src=["\']([^"\']+)["\'][^>]*class=["\']EmbeddedVideo["\']', html) or
+                        re.search(r'"video_url"\s*:\s*"([^"]+)"', html) or
+                        re.search(r'video_url:\s*["\']([^"\']+)["\']', html) or
+                        re.search(r'"video_versions":\[\{"url":"([^"]+)"', html)
+                    )
+
+                    if v_match:
+                        clean_url = v_match.group(1).replace("&amp;", "&").replace(r"\/", "/")
+                        if clean_url.startswith("http"):
+                            logger.info(f"✅ Instagram embed scraper success for shortcode {shortcode}")
+                            return {
+                                "status": "success",
+                                "video_url": clean_url,
+                                "title": "Instagram Video",
+                                "source": "instagram_embed"
+                            }
+    except Exception as e:
+        logger.warning(f"Instagram embed scraper error: {e}")
+    return None
+
+async def direct_instagram_api_scraper(url: str) -> Optional[Dict[str, Any]]:
+    """Query Instagram web info JSON endpoint."""
+    shortcode = extract_instagram_shortcode(url)
+    if not shortcode:
+        return None
+
+    info_url = f"https://www.instagram.com/p/{shortcode}/?__a=1&__d=dis"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36",
+        "Accept": "*/*",
+        "X-IG-App-ID": "936619743392459",
+        "Sec-Fetch-Site": "same-origin"
+    }
+    try:
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.get(info_url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if isinstance(data, dict):
+                        items = data.get("items", [])
+                        if items:
+                            item = items[0]
+                            v_versions = item.get("video_versions", [])
+                            if v_versions:
+                                best_v = sorted(v_versions, key=lambda x: x.get("height", 0), reverse=True)[0]
+                                return {
+                                    "status": "success",
+                                    "video_url": best_v.get("url"),
+                                    "title": item.get("caption", {}).get("text", "Instagram Video") if isinstance(item.get("caption"), dict) else "Instagram Video",
+                                    "source": "instagram_api"
+                                }
+    except Exception as e:
+        logger.warning(f"Instagram info API error: {e}")
+    return None
+
+# ==================== FACEBOOK DIRECT SCRAPER ====================
 def unescape_fb_url(url_str: str) -> str:
     """Clean and unescape Facebook JSON encoded stream URLs."""
     if not url_str:
@@ -104,7 +199,7 @@ async def direct_facebook_scraper(url: str) -> Optional[Dict[str, Any]]:
     """Direct scraper for Facebook Reels, Watch, and Video posts."""
     try:
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
             "Sec-Fetch-Mode": "navigate"
@@ -143,11 +238,12 @@ async def direct_facebook_scraper(url: str) -> Optional[Dict[str, Any]]:
         logger.warning(f"Facebook direct scraper error for {url}: {e}")
     return None
 
+# ==================== PINTEREST DIRECT SCRAPER ====================
 async def direct_pinterest_scraper(url: str) -> Optional[Dict[str, Any]]:
     """Direct scraper for Pinterest video streams."""
     try:
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
         }
         async with aiohttp.ClientSession(headers=headers) as session:
@@ -172,6 +268,7 @@ async def direct_pinterest_scraper(url: str) -> Optional[Dict[str, Any]]:
         logger.warning(f"Pinterest direct scraper error: {e}")
     return None
 
+# ==================== PRIMARY API ENDPOINT ====================
 async def fetch_api_downloader(platform: str, url: str) -> Optional[Dict[str, Any]]:
     """Query the primary render API endpoint."""
     api_base = API_ENDPOINTS.get(platform)
@@ -197,6 +294,7 @@ async def fetch_api_downloader(platform: str, url: str) -> Optional[Dict[str, An
         logger.warning(f"Primary API error for {platform} ({url}): {e}")
     return None
 
+# ==================== YT-DLP FALLBACK ENGINE ====================
 async def fallback_ytdlp_downloader(url: str, download_file: bool = True) -> Optional[Dict[str, Any]]:
     """Fallback engine using yt-dlp with audio merge guarantee."""
     loop = asyncio.get_event_loop()
@@ -216,7 +314,7 @@ async def fallback_ytdlp_downloader(url: str, download_file: bool = True) -> Opt
                 'skip_download': not download_file,
                 'outtmpl': out_template,
                 'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
                     'Accept-Language': 'en-US,en;q=0.9'
                 }
             }
@@ -288,6 +386,7 @@ async def fallback_ytdlp_downloader(url: str, download_file: bool = True) -> Opt
 
     return await loop.run_in_executor(None, run_yt_dlp)
 
+# ==================== REMUX & VERIFICATION ENGINE ====================
 async def ensure_playable_video(input_path: str, output_path: str) -> bool:
     """Remux video into 100% playable progressive MP4 with yuv420p & faststart."""
     if not is_ffmpeg_available():
@@ -316,8 +415,12 @@ async def ensure_playable_video(input_path: str, output_path: str) -> bool:
         return False
     return await loop.run_in_executor(None, _remux)
 
+# ==================== UNIFIED DOWNLOADER ENTRYPOINT ====================
 async def download_media(url: str, force_local_download: bool = True) -> Dict[str, Any]:
-    """Unified downloader entry point supporting Instagram, Pinterest, Snapchat, and Facebook."""
+    """
+    Unified Downloader Pipeline supporting Instagram (Reels/Posts/Stories),
+    Pinterest (Pins/Clips), Facebook (Reels/Watch), and Snapchat.
+    """
     expanded_url = await expand_short_url(url)
     platform = detect_platform(expanded_url) or detect_platform(url)
     
@@ -326,7 +429,39 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
 
     temp_dir = tempfile.gettempdir()
 
-    # 1. For Facebook: Try Direct Scraper First
+    # ---------------- 1. INSTAGRAM PIPELINE ----------------
+    if platform == "instagram":
+        # A. Try Direct Embed Scraper (Fastest, never rate-limited)
+        insta_res = await direct_instagram_embed_scraper(expanded_url)
+        if insta_res and insta_res.get("video_url"):
+            raw_target = os.path.join(temp_dir, f"insta_raw_{int(time.time())}.mp4")
+            if await download_url_to_file(insta_res["video_url"], raw_target):
+                play_target = os.path.join(temp_dir, f"insta_play_{int(time.time())}.mp4")
+                if await ensure_playable_video(raw_target, play_target):
+                    try: os.remove(raw_target)
+                    except Exception: pass
+                    insta_res["local_file"] = play_target
+                else:
+                    insta_res["local_file"] = raw_target
+                insta_res["platform"] = platform
+                return insta_res
+
+        # B. Try Direct Info API Scraper
+        insta_api_res = await direct_instagram_api_scraper(expanded_url)
+        if insta_api_res and insta_api_res.get("video_url"):
+            raw_target = os.path.join(temp_dir, f"insta_api_{int(time.time())}.mp4")
+            if await download_url_to_file(insta_api_res["video_url"], raw_target):
+                play_target = os.path.join(temp_dir, f"insta_play_{int(time.time())}.mp4")
+                if await ensure_playable_video(raw_target, play_target):
+                    try: os.remove(raw_target)
+                    except Exception: pass
+                    insta_api_res["local_file"] = play_target
+                else:
+                    insta_api_res["local_file"] = raw_target
+                insta_api_res["platform"] = platform
+                return insta_api_res
+
+    # ---------------- 2. FACEBOOK PIPELINE ----------------
     if platform == "facebook":
         fb_res = await direct_facebook_scraper(expanded_url)
         if fb_res and fb_res.get("video_url"):
@@ -342,7 +477,7 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
                 fb_res["platform"] = platform
                 return fb_res
 
-    # 2. For Pinterest: Try Direct Scraper
+    # ---------------- 3. PINTEREST PIPELINE ----------------
     if platform == "pinterest":
         pin_res = await direct_pinterest_scraper(expanded_url)
         if pin_res and pin_res.get("video_url"):
@@ -358,7 +493,7 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
                 pin_res["platform"] = platform
                 return pin_res
 
-    # 3. Try yt-dlp with direct download
+    # ---------------- 4. YT-DLP ENGINE (ALL PLATFORMS) ----------------
     fallback_res = await fallback_ytdlp_downloader(expanded_url, download_file=True)
     if fallback_res and fallback_res.get("local_file") and os.path.exists(fallback_res["local_file"]):
         raw_file = fallback_res["local_file"]
@@ -370,7 +505,7 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
         fallback_res["platform"] = platform
         return fallback_res
 
-    # 4. Try Primary Render API
+    # ---------------- 5. PRIMARY RENDER API FALLBACK ----------------
     primary_res = await fetch_api_downloader(platform, expanded_url)
     if primary_res and primary_res.get("video_url"):
         v_url = primary_res["video_url"]
@@ -386,7 +521,7 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
             primary_res["platform"] = platform
             return primary_res
 
-    # 5. If stream URL obtained from yt-dlp metadata
+    # ---------------- 6. STREAM URL FALLBACK ----------------
     if fallback_res and fallback_res.get("video_url"):
         v_url = fallback_res["video_url"]
         raw_target = os.path.join(temp_dir, f"ytdl_stream_{int(time.time())}.mp4")
@@ -411,7 +546,7 @@ async def download_file_to_bytes(url: str) -> Optional[bytes]:
     """Download direct video/audio stream into memory."""
     try:
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         }
         async with aiohttp.ClientSession(headers=headers) as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
@@ -425,7 +560,7 @@ async def download_url_to_file(url: str, output_path: str) -> bool:
     """Download direct URL stream into local file with headers & verification."""
     try:
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             "Referer": "https://www.google.com/"
         }
         async with aiohttp.ClientSession(headers=headers) as session:
@@ -479,7 +614,7 @@ async def convert_video_media(
 
         ffmpeg_bin = get_ffmpeg_binary()
 
-        # Clean, 100% standard FFmpeg scale filters
+        # Clean, standard FFmpeg scale filters
         filter_map = {
             "2160p": "scale=-2:2160",
             "1080p": "scale=-2:1080",
@@ -600,7 +735,6 @@ async def extract_audio_from_media(
         
         ffmpeg_bin = get_ffmpeg_binary()
         
-        # Audio extraction command
         cmd = [
             ffmpeg_bin, "-y",
             "-i", input_path,
