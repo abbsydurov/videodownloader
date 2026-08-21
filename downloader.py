@@ -191,6 +191,7 @@ def decode_snapsave_js(js_code: str) -> str:
 
 async def direct_snapsave_scraper(url: str) -> Optional[Dict[str, Any]]:
     """Scrape SnapSave engine and unpack client-side payload."""
+    clean_url = url.split("?")[0]
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
         "Referer": "https://snapsave.app/",
@@ -198,25 +199,28 @@ async def direct_snapsave_scraper(url: str) -> Optional[Dict[str, Any]]:
     }
     try:
         async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False), headers=headers) as s:
-            async with s.post("https://snapsave.app/action.php", data={"url": url}, timeout=aiohttp.ClientTimeout(total=12)) as r:
+            async with s.post("https://snapsave.app/action.php", data={"url": clean_url}, timeout=aiohttp.ClientTimeout(total=12)) as r:
                 if r.status == 200:
                     raw_js = await r.text()
                     decoded_html = decode_snapsave_js(raw_js)
                     if decoded_html:
-                        vids = re.findall(r'href=["\'](https?://[^\s"\'<>]+)["\'][^>]*class=["\'][^"\']*download', decoded_html) or \
-                               re.findall(r'href=["\'](https?://[^\s"\'<>]+)["\'][^>]*>Download', decoded_html) or \
-                               re.findall(r'href=["\'](https?://[^\s"\'<>]+)["\']', decoded_html)
-                        for v in vids:
-                            clean_v = v.replace("&amp;", "&")
-                            if is_valid_media_url(clean_v) and not any(k in clean_v for k in ["snapsave", "facebook.com", "instagram.com", "google.com"]):
-                                is_img = any(ext in clean_v.lower() for ext in [".jpg", ".jpeg", ".png", ".webp"])
+                        unescaped = decoded_html.replace(r'\"', '"').replace(r"\'", "'").replace(r'\/', '/')
+                        links = re.findall(r'href="([^"]+)"', unescaped) + re.findall(r"href='([^']+)'", unescaped)
+                        for clean_v in links:
+                            clean_v = clean_v.replace("&amp;", "&").strip()
+                            if not clean_v.startswith("http"):
+                                continue
+                            if any(k in clean_v for k in ["google.com", "play.google", "javascript", "snapsave.app"]):
+                                continue
+                            if "rapidcdn.app" in clean_v or ".mp4" in clean_v or "fbcdn.net" in clean_v or "cdninstagram" in clean_v:
+                                is_img = "thumb" in clean_v or any(clean_v.endswith(ext) for ext in [".jpg", ".png", ".webp"])
                                 return {
                                     "status": "success",
                                     "media_type": "photo" if is_img else "video",
                                     "video_url": None if is_img else clean_v,
                                     "image_url": clean_v if is_img else None,
                                     "title": "Instagram Media",
-                                    "source": "snapsave_scraper"
+                                    "source": "snapsave_engine"
                                 }
     except Exception as e:
         logger.warning(f"SnapSave scraper error: {e}")
