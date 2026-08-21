@@ -404,14 +404,14 @@ async def process_media_urls(message: Message, bot: Bot):
         )
 
     for idx, url in enumerate(urls, 1):
-        platform = downloader.detect_platform(url)
-        status_msg = await message.answer(
+        platform = downloader.detect_platform(url) if hasattr(downloader, 'detect_platform') else "social"
+        status_text = (
             f"{get_p_emoji('down')} <b>Downloading Media [{idx}/{total_urls}]</b>...\n"
             f"{get_p_emoji('bullet')} <b>Platform:</b> {platform.title() if platform else 'Social Media'}\n"
             f"{get_p_emoji('bullet')} <b>Quality:</b> Original Full HD / 4K\n"
-            f"<i>Please wait a moment...</i>",
-            parse_mode="HTML"
+            f"<i>Please wait a moment...</i>"
         )
+        status_msg = await safe_reply(message, status_text)
 
         res = await downloader.download_media(url, force_local_download=True)
 
@@ -588,13 +588,20 @@ async def process_media_urls(message: Message, bot: Bot):
 
         else:
             err_msg = res.get("message", "Unable to download media.")
-            await status_msg.edit_text(
+            err_text = (
                 f"{get_p_emoji('trash')} <b>Download Failed [{idx}/{total_urls}]</b>\n\n"
                 f"{get_p_emoji('bullet')} <b>Platform:</b> {platform.title() if platform else 'Unknown'}\n"
                 f"{get_p_emoji('bullet')} <b>Error:</b> {err_msg}\n\n"
-                f"<i>Tip: Check if the link is public or try again.</i>",
-                parse_mode="HTML"
+                f"<i>Tip: Check if the link is public or try again.</i>"
             )
+            try:
+                await status_msg.edit_text(err_text, parse_mode="HTML")
+            except Exception:
+                clean_err_text = re.sub(r'<tg-emoji emoji-id="[^"]*">([^<]*)</tg-emoji>', r'\1', err_text)
+                try:
+                    await status_msg.edit_text(clean_err_text, parse_mode="HTML")
+                except Exception:
+                    pass
             await db.log_download_request(user_id, platform or "unknown", url, status="error")
 
 # ==================== DIRECT MEDIA HANDLERS (VIDEO & PHOTO) ====================
