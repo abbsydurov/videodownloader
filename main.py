@@ -996,7 +996,8 @@ async def admin_add_emoji_handler(message: Message):
     name = parts[1].lower()
     emoji_id = parts[2]
     await db.save_custom_emoji(name, emoji_id, updated_by=message.from_user.id)
-    await message.reply(f"{get_p_emoji('sparkles')} <b>Custom Emoji Saved!</b>\n• Name: <code>{name}</code>\n• ID: <code>{emoji_id}</code>", parse_mode="HTML")
+    config.update_emoji_cache(name, "✨", emoji_id)
+    await message.reply(f"{get_p_emoji('sparkles')} <b>Custom Emoji Saved & Cached!</b>\n• Name: <code>{name}</code>\n• ID: <code>{emoji_id}</code>", parse_mode="HTML")
 
 @admin_router.message(Command("emojis"))
 async def admin_view_emojis_handler(message: Message):
@@ -1102,8 +1103,20 @@ async def inline_query_handler(inline_query: InlineQuery, bot: Bot):
 async def main():
     logger.info("🚀 Starting Social Media Video & Photo Downloader & Media Resizer Bot...")
     
-    # Initialize MongoDB
+    # Initialize MongoDB & Load custom emojis
     await db.init_db()
+    try:
+        saved_emojis = await db.get_all_custom_emojis()
+        for e in saved_emojis:
+            name = e.get("name")
+            eid = e.get("emoji_id")
+            char = e.get("char", "✨")
+            if name and eid:
+                config.update_emoji_cache(name, char, eid)
+        if saved_emojis:
+            logger.info(f"Loaded {len(saved_emojis)} custom premium emojis from MongoDB.")
+    except Exception as e_err:
+        logger.warning(f"Error loading custom emojis: {e_err}")
 
     bot = Bot(
         token=BOT_TOKEN,
