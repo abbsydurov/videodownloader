@@ -137,6 +137,67 @@ def clean_markup_for_fallback(reply_markup: Optional[InlineKeyboardMarkup]) -> O
         new_rows.append(new_row)
     return InlineKeyboardMarkup(inline_keyboard=new_rows)
 
+async def safe_reply(
+    message: Message,
+    text: str,
+    reply_markup: Optional[InlineKeyboardMarkup] = None,
+    parse_mode: str = "HTML",
+    photo: Optional[str] = None
+) -> Message:
+    """
+    Sends message with Custom Premium Emojis (<tg-emoji>) and Button Colors.
+    If Telegram raises ENTITY_TEXT_INVALID, DOCUMENT_INVALID, or BUTTON_DATA_INVALID,
+    it automatically strips restricted tags and retries seamlessly!
+    """
+    try:
+        if photo and photo.startswith("http"):
+            return await message.answer_photo(photo=photo, caption=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        return await message.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
+    except Exception as e:
+        err_msg = str(e)
+        if any(err in err_msg for err in ["ENTITY_TEXT_INVALID", "DOCUMENT_INVALID", "BUTTON_DATA_INVALID", "can't parse entities"]):
+            clean_text = re.sub(r'<tg-emoji emoji-id="[^"]*">([^<]*)</tg-emoji>', r'\1', text)
+            clean_kb = clean_markup_for_fallback(reply_markup)
+            try:
+                if photo and photo.startswith("http"):
+                    return await message.answer_photo(photo=photo, caption=clean_text, reply_markup=clean_kb, parse_mode=parse_mode)
+                return await message.answer(clean_text, reply_markup=clean_kb, parse_mode=parse_mode)
+            except Exception:
+                try:
+                    return await message.answer(clean_text, reply_markup=clean_kb)
+                except Exception:
+                    pass
+        raise e
+
+async def safe_edit_message(
+    callback: CallbackQuery,
+    text: str,
+    reply_markup: Optional[InlineKeyboardMarkup] = None
+):
+    """Safely edits caption or text with auto-fallback for custom emojis."""
+    try:
+        if callback.message.photo or callback.message.caption:
+            await callback.message.edit_caption(caption=text, reply_markup=reply_markup, parse_mode="HTML")
+        else:
+            await callback.message.edit_text(text=text, reply_markup=reply_markup, parse_mode="HTML")
+    except Exception as e:
+        err_msg = str(e)
+        if any(err in err_msg for err in ["ENTITY_TEXT_INVALID", "DOCUMENT_INVALID", "BUTTON_DATA_INVALID", "can't parse entities"]):
+            clean_text = re.sub(r'<tg-emoji emoji-id="[^"]*">([^<]*)</tg-emoji>', r'\1', text)
+            clean_kb = clean_markup_for_fallback(reply_markup)
+            try:
+                if callback.message.photo or callback.message.caption:
+                    await callback.message.edit_caption(caption=clean_text, reply_markup=clean_kb, parse_mode=parse_mode)
+                else:
+                    await callback.message.edit_text(text=clean_text, reply_markup=clean_kb, parse_mode=parse_mode)
+                return
+            except Exception:
+                pass
+        try:
+            await callback.message.answer(text, reply_markup=reply_markup, parse_mode="HTML")
+        except Exception:
+            pass
+
 def get_downloader_keyboard(url: str, platform: str, video_url: str, cache_hash: str) -> InlineKeyboardMarkup:
     kb = [
         [
@@ -275,10 +336,7 @@ async def command_start_handler(message: Message, bot: Bot):
         f"{get_p_emoji('bullet')} {get_p_emoji('search')} <b>Inline Search Mode:</b> Type <code>@{bot_info.username} &lt;link&gt;</code> in any chat.\n\n"
         f"<i>Paste your video/photo link or send any media file below!</i>"
     )
-    try:
-        await message.answer_photo(photo=WELCOME_IMAGE, caption=caption_text, reply_markup=keyboard, parse_mode="HTML")
-    except Exception:
-        await message.answer(caption_text, reply_markup=keyboard, parse_mode="HTML")
+    await safe_reply(message, caption_text, reply_markup=keyboard, photo=WELCOME_IMAGE)
 
 @start_router.message(Command("help"))
 async def command_help_handler(message: Message):
@@ -288,7 +346,7 @@ async def command_help_handler(message: Message):
         text = f"{get_user_help_guide()}\n\n{get_admin_help_guide()}"
     else:
         text = get_user_help_guide()
-    await message.answer(text, parse_mode="HTML")
+    await safe_reply(message, text)
 
 @start_router.message(Command("stats"))
 async def command_stats_handler(message: Message):
@@ -305,7 +363,7 @@ async def command_stats_handler(message: Message):
         f"{get_p_emoji('bullet')} {get_p_emoji('fb')} Facebook &amp; Meta Ads: {stats['platforms']['facebook']}\n\n"
         f"{get_p_emoji('check_mark')} <i>All Downloader APIs &amp; Audio Remuxer Engine Active!</i>"
     )
-    await message.answer(text, parse_mode="HTML")
+    await safe_reply(message, text)
 
 def extract_urls(text: str) -> List[str]:
     """Extract all valid social media URLs from message text with markdown & bracket cleaning."""
