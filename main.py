@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 import sys
 import tempfile
 import time
@@ -306,11 +307,30 @@ async def command_stats_handler(message: Message):
     )
     await message.answer(text, parse_mode="HTML")
 
+def extract_urls(text: str) -> List[str]:
+    """Extract all valid social media URLs from message text with markdown & bracket cleaning."""
+    if hasattr(downloader, 'extract_urls'):
+        try:
+            res = downloader.extract_urls(text)
+            if res:
+                return res
+        except Exception:
+            pass
+    urls = []
+    clean_text = text.replace("[", " ").replace("]", " ").replace("(", " ").replace(")", " ").replace("<", " ").replace(">", " ")
+    raw_urls = re.findall(r'https?://[^\s\'"<>\[\]\(\)]+', clean_text)
+    for u in raw_urls:
+        u = u.strip().rstrip(".,;!?:")
+        p = downloader.detect_platform(u) if hasattr(downloader, 'detect_platform') else None
+        if p and u not in urls:
+            urls.append(u)
+    return urls
+
 # ==================== DOWNLOADER & MULTI-QUEUE ROUTER ====================
 @downloader_router.message(F.text)
 async def process_media_urls(message: Message, bot: Bot):
     text = message.text or ""
-    urls = downloader.extract_urls(text)
+    urls = extract_urls(text)
     
     if not urls:
         return
