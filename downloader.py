@@ -55,7 +55,6 @@ def is_ffmpeg_available() -> bool:
 
 async def expand_short_url(url: str) -> str:
     """Expand shortened social links (e.g. pin.it, fb.watch, instagram share links)."""
-    # Clean bracket artifacts from forwarded markdown
     url = url.strip().strip("[]()<>\"'")
     if any(k in url for k in ["pin.it", "fb.watch", "bit.ly", "t.co", "/share/", "ig.me"]):
         try:
@@ -88,7 +87,6 @@ def detect_platform(url: str) -> Optional[str]:
 def extract_urls(text: str) -> List[str]:
     """Extract all valid social media URLs from message text with markdown & bracket cleaning."""
     urls = []
-    # Replace markdown link characters and brackets with spaces so URLs are extracted cleanly
     clean_text = text.replace("[", " ").replace("]", " ").replace("(", " ").replace(")", " ").replace("<", " ").replace(">", " ")
     raw_urls = re.findall(r'https?://[^\s\'"<>\[\]\(\)]+', clean_text)
     for u in raw_urls:
@@ -99,11 +97,24 @@ def extract_urls(text: str) -> List[str]:
     return urls
 
 # ==================== INSTAGRAM MULTI-LAYER SCRAPERS ====================
+def is_valid_media_url(u: str) -> bool:
+    """Validate that a URL is an actual downloadable media file and not a website asset or ad."""
+    if not u or not isinstance(u, str) or not u.startswith("http"):
+        return False
+    u_lower = u.lower()
+    invalid_patterns = [
+        "pagead", "adsbygoogle", "googleads", "analytics", "doubleclick",
+        "favicon", "apple-icon", "logo", "avatar", "icon/", ".js", ".css",
+        ".ico", "null", "undefined", "about:blank", "indown.io/new"
+    ]
+    if any(p in u_lower for p in invalid_patterns):
+        return False
+    return True
+
 def extract_instagram_shortcode(url: str) -> Optional[str]:
     """Extract Instagram post/reel shortcode from URL."""
-    # Clean brackets/quotes
     url = url.strip().strip("[]()<>\"'")
-    match = re.search(r'(?:instagram\.com|instagr\.am|ig\.me)/(?:reels|reel|p|tv|share/reel|share/p|share)/([a-zA-Z0-9_\-]+)', url)
+    match = re.search(r'(?:instagram\.com|instagr\.am|ig\.me)/(?:reels|reel|p|tv|stories|share/reel|share/p|share)/([a-zA-Z0-9_\-]+)', url)
     if match:
         return match.group(1)
     
@@ -124,80 +135,217 @@ def shortcode_to_media_id(shortcode: str) -> Optional[int]:
     except Exception:
         return None
 
+def decode_snapsave_js(js_code: str) -> str:
+    """Decode SnapSave / SnapInsta packed JavaScript obfuscation."""
+    try:
+        pattern = r'\(\s*"([^"]+)"\s*,\s*(\d+)\s*,\s*"([^"]+)"\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)'
+        match = re.search(pattern, js_code)
+        if match:
+            h, u, n, t, e, r = match.groups()
+            u, t, e, r = int(u), int(t), int(e), int(r)
+            
+            def base_decode(d, base_e, base_f):
+                alphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ+/"
+                h_set = alphabet[0:base_e]
+                i_set = alphabet[0:base_f]
+                res = 0
+                for idx, char in enumerate(reversed(d)):
+                    if char in h_set:
+                        res += h_set.index(char) * (base_e ** idx)
+                if res == 0:
+                    return "0"
+                out = ""
+                while res > 0:
+                    out = i_set[res % base_f] + out
+                    res //= base_f
+                return out
+
+            res_str = ""
+            i = 0
+            while i < len(h):
+                s = ""
+                while i < len(h) and h[i] != n[e]:
+                    s += h[i]
+                    i += 1
+                for j in range(len(n)):
+                    s = s.replace(n[j], str(j))
+                if s:
+                    res_str += chr(int(base_decode(s, e, 10)) - t)
+                i += 1
+            return res_str
+    except Exception:
+        pass
+    return ""
+
+async def direct_snapsave_scraper(url: str) -> Optional[Dict[str, Any]]:
+    """Scrape SnapSave engine and unpack client-side payload."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Referer": "https://snapsave.app/",
+        "Origin": "https://snapsave.app"
+    }
+    try:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False), headers=headers) as s:
+            async with s.post("https://snapsave.app/action.php", data={"url": url}, timeout=aiohttp.ClientTimeout(total=12)) as r:
+                if r.status == 200:
+                    raw_js = await r.text()
+                    decoded_html = decode_snapsave_js(raw_js)
+                    if decoded_html:
+                        vids = re.findall(r'href=["\'](https?://[^\s"\'<>]+)["\'][^>]*class=["\'][^"\']*download', decoded_html) or \
+                               re.findall(r'href=["\'](https?://[^\s"\'<>]+)["\'][^>]*>Download', decoded_html) or \
+                               re.findall(r'href=["\'](https?://[^\s"\'<>]+)["\']', decoded_html)
+                        for v in vids:
+                            clean_v = v.replace("&amp;", "&")
+                            if is_valid_media_url(clean_v) and not any(k in clean_v for k in ["snapsave", "facebook.com", "instagram.com", "google.com"]):
+                                is_img = any(ext in clean_v.lower() for ext in [".jpg", ".jpeg", ".png", ".webp"])
+                                return {
+                                    "status": "success",
+                                    "media_type": "photo" if is_img else "video",
+                                    "video_url": None if is_img else clean_v,
+                                    "image_url": clean_v if is_img else None,
+                                    "title": "Instagram Media",
+                                    "source": "snapsave_scraper"
+                                }
+    except Exception as e:
+        logger.warning(f"SnapSave scraper error: {e}")
+    return None
+
+async def direct_indown_scraper(url: str) -> Optional[Dict[str, Any]]:
+    """Scrape InDown.io for Instagram Reels, Posts, and Photos."""
+    clean_url = url.split("?")[0]
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Referer": "https://indown.io/reels",
+        "Origin": "https://indown.io",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9"
+    }
+    try:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False), headers=headers) as session:
+            async with session.get("https://indown.io/reels", timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    html = await resp.text()
+                    token_m = re.search(r'name="_token"\s+value="([^"]+)"', html)
+                    if token_m:
+                        token = token_m.group(1)
+                        post_data = {
+                            "referer": "https://indown.io/reels",
+                            "locale": "en",
+                            "_token": token,
+                            "link": clean_url
+                        }
+                        async with session.post("https://indown.io/download", data=post_data, timeout=aiohttp.ClientTimeout(total=15)) as post_resp:
+                            if post_resp.status == 200:
+                                post_html = await post_resp.text()
+                                
+                                v_matches = re.findall(r'href=["\'](https?://[^\s"\'<>]+)["\'][^>]*class=["\'][^"\']*btn-primary[^"\']*["\']', post_html) or \
+                                            re.findall(r'href=["\'](https?://[^\s"\'<>]+\.mp4[^\s"\'<>]*)["\']', post_html) or \
+                                            re.findall(r'src=["\'](https?://[^\s"\'<>]+\.mp4[^\s"\'<>]*)["\']', post_html)
+                                
+                                for v in v_matches:
+                                    clean_v = v.replace("&amp;", "&")
+                                    if is_valid_media_url(clean_v) and ("cdninstagram" in clean_v or "fbcdn" in clean_v or "mp4" in clean_v or "download" in clean_v):
+                                        return {
+                                            "status": "success",
+                                            "media_type": "video",
+                                            "video_url": clean_v,
+                                            "title": "Instagram Video",
+                                            "source": "indown_scraper"
+                                        }
+                                
+                                img_matches = re.findall(r'href=["\'](https?://[^\s"\'<>]*(?:cdninstagram|fbcdn)[^\s"\'<>]+\.(?:jpg|jpeg|png|webp)[^\s"\'<>]*)["\']', post_html) or \
+                                              re.findall(r'src=["\'](https?://[^\s"\'<>]*(?:cdninstagram|fbcdn)[^\s"\'<>]+\.(?:jpg|jpeg|png|webp)[^\s"\'<>]*)["\']', post_html)
+                                for im in img_matches:
+                                    clean_im = im.replace("&amp;", "&")
+                                    if is_valid_media_url(clean_im):
+                                        return {
+                                            "status": "success",
+                                            "media_type": "photo",
+                                            "image_url": clean_im,
+                                            "title": "Instagram Photo",
+                                            "source": "indown_scraper"
+                                        }
+    except Exception as e:
+        logger.warning(f"InDown scraper error: {e}")
+    return None
+
 async def direct_instagram_graphql_scraper(url: str) -> Optional[Dict[str, Any]]:
-    """Query Instagram official Mobile / GraphQL endpoints using App-ID headers supporting Photos, Videos, and Carousels."""
+    """Query Instagram official Mobile & GraphQL endpoints supporting Photos, Videos, and Carousels."""
     shortcode = extract_instagram_shortcode(url)
     if not shortcode:
         return None
 
     media_id = shortcode_to_media_id(shortcode)
-    urls_to_try = []
+    urls_to_try = [
+        f"https://www.instagram.com/graphql/query/?doc_id=8845758582119845&variables={{\"shortcode\":\"{shortcode}\"}}",
+        f"https://www.instagram.com/p/{shortcode}/?__a=1&__d=dis"
+    ]
     if media_id:
-        urls_to_try.append(f"https://www.instagram.com/api/v1/media/{media_id}/info/")
-    urls_to_try.append(f"https://www.instagram.com/p/{shortcode}/?__a=1&__d=dis")
+        urls_to_try.insert(0, f"https://www.instagram.com/api/v1/media/{media_id}/info/")
 
     headers = {
-        "User-Agent": "Instagram 319.0.0.39.112 Android (33/13; 420dpi; 1080x2400; samsung; SM-G991N; o1s; qcom)",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
         "X-IG-App-ID": "936619743392459",
         "X-ASBD-ID": "129477",
         "X-IG-WWW-Claim": "0",
         "Accept": "*/*",
         "Accept-Language": "en-US,en;q=0.9",
-        "Sec-Fetch-Site": "same-origin"
+        "Referer": f"https://www.instagram.com/p/{shortcode}/"
     }
 
     for target in urls_to_try:
         try:
-            async with aiohttp.ClientSession(headers=headers) as session:
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False), headers=headers) as session:
                 async with session.get(target, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         if isinstance(data, dict):
-                            items = data.get("items", [])
-                            if not items and "graphql" in data:
-                                shortcode_media = data.get("graphql", {}).get("shortcode_media", {})
+                            # Check GraphQL format
+                            shortcode_media = data.get("data", {}).get("xdt_shortcode_media", {}) or data.get("graphql", {}).get("shortcode_media", {})
+                            if shortcode_media:
                                 is_vid = shortcode_media.get("is_video", False)
-                                if is_vid:
+                                v_url = shortcode_media.get("video_url")
+                                img_url = shortcode_media.get("display_url")
+                                if is_vid and is_valid_media_url(v_url):
                                     return {
                                         "status": "success",
                                         "media_type": "video",
-                                        "video_url": shortcode_media.get("video_url"),
+                                        "video_url": v_url,
                                         "title": "Instagram Video",
                                         "source": "instagram_graphql"
                                     }
-                                else:
-                                    img_url = shortcode_media.get("display_url")
-                                    if img_url:
-                                        return {
-                                            "status": "success",
-                                            "media_type": "photo",
-                                            "image_url": img_url,
-                                            "title": "Instagram Photo",
-                                            "source": "instagram_graphql"
-                                        }
+                                elif img_url and is_valid_media_url(img_url):
+                                    return {
+                                        "status": "success",
+                                        "media_type": "photo",
+                                        "image_url": img_url,
+                                        "title": "Instagram Photo",
+                                        "source": "instagram_graphql"
+                                    }
 
+                            # Check items format
+                            items = data.get("items", [])
                             if items:
                                 item = items[0]
                                 caption = "Instagram Media"
                                 if isinstance(item.get("caption"), dict):
                                     caption = item.get("caption", {}).get("text", "Instagram Media")
                                 
-                                media_type = item.get("media_type") # 1 = Photo, 2 = Video, 8 = Carousel
-
-                                # 1. Video Post
+                                media_type = item.get("media_type")
                                 if media_type == 2 or item.get("video_versions"):
                                     v_versions = item.get("video_versions", [])
                                     if v_versions:
                                         best_v = sorted(v_versions, key=lambda x: x.get("height", 0), reverse=True)[0]
-                                        return {
-                                            "status": "success",
-                                            "media_type": "video",
-                                            "video_url": best_v.get("url"),
-                                            "title": caption,
-                                            "source": "instagram_mobile_api"
-                                        }
+                                        v_url = best_v.get("url")
+                                        if is_valid_media_url(v_url):
+                                            return {
+                                                "status": "success",
+                                                "media_type": "video",
+                                                "video_url": v_url,
+                                                "title": caption,
+                                                "source": "instagram_mobile_api"
+                                            }
 
-                                # 2. Carousel / Sidecar Post (Multiple Photos & Videos)
                                 elif media_type == 8 and item.get("carousel_media"):
                                     media_list = []
                                     for c in item["carousel_media"]:
@@ -221,18 +369,19 @@ async def direct_instagram_graphql_scraper(url: str) -> Optional[Dict[str, Any]]
                                             "source": "instagram_mobile_api"
                                         }
 
-                                # 3. Single Photo Post
                                 elif media_type == 1 or item.get("image_versions2"):
                                     cands = item.get("image_versions2", {}).get("candidates", [])
                                     if cands:
                                         best_img = sorted(cands, key=lambda x: x.get("height", 0), reverse=True)[0]
-                                        return {
-                                            "status": "success",
-                                            "media_type": "photo",
-                                            "image_url": best_img.get("url"),
-                                            "title": caption,
-                                            "source": "instagram_mobile_api"
-                                        }
+                                        img_url = best_img.get("url")
+                                        if is_valid_media_url(img_url):
+                                            return {
+                                                "status": "success",
+                                                "media_type": "photo",
+                                                "image_url": img_url,
+                                                "title": caption,
+                                                "source": "instagram_mobile_api"
+                                            }
         except Exception as e:
             logger.warning(f"Instagram GraphQL/Mobile API error for {target}: {e}")
     return None
@@ -241,7 +390,6 @@ async def direct_instagram_ajax_scraper(url: str) -> Optional[Dict[str, Any]]:
     """Scrape Instagram media via high-reliability public AJAX APIs for both Photos and Videos."""
     clean_url = url.split("?")[0]
     
-    # 1. Try SaveIG / FastDL AJAX endpoint
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -256,12 +404,9 @@ async def direct_instagram_ajax_scraper(url: str) -> Optional[Dict[str, Any]]:
                     json_data = await resp.json()
                     html_content = json_data.get("data", "")
                     if html_content:
-                        # Search for video URLs first
-                        v_links = re.findall(r'href=["\'](https?://[^\s"\'<>]+)["\'][^>]*class=["\'][^"\']*abutton[^"\']*["\']', html_content)
-                        if not v_links:
-                            v_links = re.findall(r'href=["\'](https?://[^\s"\'<>]+download[^\s"\'<>]*)["\']', html_content)
-                        if not v_links:
-                            v_links = re.findall(r'https?://[^\s"\'<>]+\.mp4[^\s"\'<>]*', html_content)
+                        v_links = re.findall(r'href=["\'](https?://[^\s"\'<>]+)["\'][^>]*class=["\'][^"\']*abutton[^"\']*["\']', html_content) or \
+                                  re.findall(r'href=["\'](https?://[^\s"\'<>]+download[^\s"\'<>]*)["\']', html_content) or \
+                                  re.findall(r'href=["\'](https?://[^\s"\'<>]+\.mp4[^\s"\'<>]*)["\']', html_content)
                         
                         if v_links:
                             return {
@@ -272,7 +417,6 @@ async def direct_instagram_ajax_scraper(url: str) -> Optional[Dict[str, Any]]:
                                 "source": "saveig_ajax"
                             }
                         
-                        # Search for photo download links if not video
                         img_links = re.findall(r'href=["\'](https?://[^\s"\'<>]+\.(?:jpg|jpeg|webp|png)[^\s"\'<>]*)["\']', html_content) or \
                                     re.findall(r'src=["\'](https?://[^\s"\'<>]+\.(?:jpg|jpeg|webp|png)[^\s"\'<>]*)["\']', html_content)
                         if img_links:
@@ -286,7 +430,6 @@ async def direct_instagram_ajax_scraper(url: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.warning(f"SaveIG AJAX scraper error: {e}")
 
-    # 2. Try SnapInsta AJAX endpoint
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -313,64 +456,6 @@ async def direct_instagram_ajax_scraper(url: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.warning(f"SnapInsta AJAX scraper error: {e}")
 
-    return None
-
-async def direct_indown_scraper(url: str) -> Optional[Dict[str, Any]]:
-    """Scrape InDown.io for Instagram Reels, Posts, and Photos."""
-    clean_url = url.split("?")[0]
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Referer": "https://indown.io/reels",
-        "Origin": "https://indown.io",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9"
-    }
-    try:
-        async with aiohttp.ClientSession(headers=headers) as session:
-            # 1. Fetch CSRF token
-            async with session.get("https://indown.io/reels", timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status == 200:
-                    html = await resp.text()
-                    token_m = re.search(r'name="_token"\s+value="([^"]+)"', html)
-                    if token_m:
-                        token = token_m.group(1)
-                        post_data = {
-                            "referer": "https://indown.io/reels",
-                            "locale": "en",
-                            "_token": token,
-                            "link": clean_url
-                        }
-                        async with session.post("https://indown.io/download", data=post_data, timeout=aiohttp.ClientTimeout(total=15)) as post_resp:
-                            if post_resp.status == 200:
-                                post_html = await post_resp.text()
-                                
-                                # Search for direct video link
-                                v_matches = re.findall(r'href=["\'](https?://[^\s"\'<>]+)["\'][^>]*class=["\'][^"\']*btn-primary[^"\']*["\']', post_html) or \
-                                            re.findall(r'href=["\'](https?://[^\s"\'<>]+\.mp4[^\s"\'<>]*)["\']', post_html) or \
-                                            re.findall(r'src=["\'](https?://[^\s"\'<>]+\.mp4[^\s"\'<>]*)["\']', post_html)
-                                
-                                for v in v_matches:
-                                    if "cdninstagram" in v or "instagram" in v or "mp4" in v or "download" in v:
-                                        return {
-                                            "status": "success",
-                                            "media_type": "video",
-                                            "video_url": v.replace("&amp;", "&"),
-                                            "title": "Instagram Reel",
-                                            "source": "indown_scraper"
-                                        }
-                                
-                                # Search for image link if no video
-                                img_matches = re.findall(r'href=["\'](https?://[^\s"\'<>]+\.(?:jpg|jpeg|png|webp)[^\s"\'<>]*)["\']', post_html)
-                                if img_matches:
-                                    return {
-                                        "status": "success",
-                                        "media_type": "photo",
-                                        "image_url": img_matches[0].replace("&amp;", "&"),
-                                        "title": "Instagram Photo",
-                                        "source": "indown_scraper"
-                                    }
-    except Exception as e:
-        logger.warning(f"InDown scraper error: {e}")
     return None
 
 async def cobalt_instagram_scraper(url: str) -> Optional[Dict[str, Any]]:
@@ -426,7 +511,6 @@ async def direct_instagram_embed_scraper(url: str) -> Optional[Dict[str, Any]]:
                 if resp.status == 200:
                     html = await resp.text()
 
-                    # 1. Search for video tag
                     v_match = (
                         re.search(r'class=["\']EmbeddedVideo["\'][^>]*src=["\']([^"\']+)["\']', html) or
                         re.search(r'src=["\']([^"\']+)["\'][^>]*class=["\']EmbeddedVideo["\']', html) or
@@ -439,7 +523,7 @@ async def direct_instagram_embed_scraper(url: str) -> Optional[Dict[str, Any]]:
                     if v_match:
                         clean_url = v_match.group(1).replace("&amp;", "&").replace(r"\/", "/") if hasattr(v_match, 'group') and v_match.group(1) else v_match.group(0).replace(r"\/", "/").replace("&amp;", "&")
                         if clean_url.startswith("http"):
-                            logger.info(f"✅ Instagram embed scraper success for shortcode {shortcode}")
+                            logger.info(f"Instagram embed scraper success for shortcode {shortcode}")
                             return {
                                 "status": "success",
                                 "media_type": "video",
@@ -448,7 +532,6 @@ async def direct_instagram_embed_scraper(url: str) -> Optional[Dict[str, Any]]:
                                 "source": "instagram_embed"
                             }
                     
-                    # 2. Search for photo image tag in embed
                     img_match = re.search(r'class=["\']EmbeddedMediaImage["\'][^>]*src=["\']([^"\']+)["\']', html) or \
                                 re.search(r'src=["\']([^"\']+)["\'][^>]*class=["\']EmbeddedMediaImage["\']', html) or \
                                 re.search(r'"display_url"\s*:\s*"([^"]+)"', html)
@@ -592,7 +675,6 @@ async def direct_pinterest_scraper(url: str) -> Optional[Dict[str, Any]]:
                             "source": "pinterest_direct_scraper"
                         }
                     
-                    # Search for high res pinterest image
                     img_matches = re.findall(r'https?://i\.pinimg\.com/originals/[^\s"\'<>]+\.(?:jpg|png|jpeg|webp)', html) or \
                                   re.findall(r'https?://i\.pinimg\.com/736x/[^\s"\'<>]+\.(?:jpg|png|jpeg|webp)', html)
                     if img_matches:
@@ -609,7 +691,7 @@ async def direct_pinterest_scraper(url: str) -> Optional[Dict[str, Any]]:
 
 # ==================== PRIMARY API ENDPOINT ====================
 async def fetch_api_downloader(platform: str, url: str) -> Optional[Dict[str, Any]]:
-    """Query the primary render API endpoint with extended timeout for cold boots."""
+    """Query the primary render API endpoint with extended timeout and strict media validation."""
     api_base = API_ENDPOINTS.get(platform)
     if not api_base:
         return None
@@ -617,13 +699,13 @@ async def fetch_api_downloader(platform: str, url: str) -> Optional[Dict[str, An
     clean_target = url.split("?")[0] if platform == "instagram" else url
     target_url = f"{api_base}{clean_target}"
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(target_url, timeout=aiohttp.ClientTimeout(total=35)) as resp:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+            async with session.get(target_url, timeout=aiohttp.ClientTimeout(total=25)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    if isinstance(data, dict) and data.get("status") != "error":
+                    if isinstance(data, dict) and data.get("status") != "error" and "error" not in str(data.get("message", "")).lower():
                         media_url = data.get("video_url") or data.get("url") or data.get("video") or data.get("download_url") or data.get("data") or data.get("image_url") or data.get("image")
-                        if media_url and isinstance(media_url, str) and media_url.startswith("http"):
+                        if media_url and is_valid_media_url(media_url):
                             is_img = any(ext in media_url.lower() for ext in [".jpg", ".jpeg", ".png", ".webp"])
                             return {
                                 "status": "success",
@@ -660,12 +742,11 @@ async def fallback_ytdlp_downloader(url: str, download_file: bool = True) -> Opt
                     'instagram': {'player_client': ['ios', 'android', 'web']}
                 },
                 'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 324.0.0.18.109',
                     'Accept-Language': 'en-US,en;q=0.9'
                 }
             }
             
-            # Check for local cookie files if present
             for c_file in ["cookies.txt", "instagram_cookies.txt", "insta_cookies.txt", os.getenv("COOKIES_FILE", "")]:
                 if c_file and os.path.exists(c_file):
                     ydl_opts['cookiefile'] = c_file
@@ -739,33 +820,140 @@ async def fallback_ytdlp_downloader(url: str, download_file: bool = True) -> Opt
 
     return await loop.run_in_executor(None, run_yt_dlp)
 
-# ==================== REMUX & VERIFICATION ENGINE ====================
+# ==================== REMUX & VIDEO PLAYABILITY ENGINE ====================
+def get_video_metadata_and_thumb(video_path: str) -> Tuple[Optional[int], Optional[int], Optional[int], Optional[str]]:
+    """Extract width, height, duration, and thumbnail using ffmpeg for flawless Telegram video player streaming."""
+    try:
+        ffmpeg_bin = get_ffmpeg_binary()
+        temp_dir = tempfile.gettempdir()
+        thumb_path = os.path.join(temp_dir, f"thumb_{int(time.time())}_{abs(hash(video_path)) % 10000}.jpg")
+        
+        # 1. Generate Thumbnail
+        cmd_thumb = [
+            ffmpeg_bin, "-y",
+            "-ss", "00:00:00.500",
+            "-i", video_path,
+            "-vframes", "1",
+            "-q:v", "2",
+            thumb_path
+        ]
+        run_ffmpeg_command(cmd_thumb)
+        
+        w, h, dur = None, None, None
+        if os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 100:
+            try:
+                from PIL import Image
+                with Image.open(thumb_path) as img:
+                    w, h = img.size
+            except Exception:
+                pass
+        else:
+            thumb_path = None
+
+        # 2. Probe Duration and Dimensions via ffmpeg info if available
+        try:
+            cmd_probe = [ffmpeg_bin, "-i", video_path]
+            res = subprocess.run(cmd_probe, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=8)
+            probe_out = res.stderr.decode('utf-8', errors='ignore')
+            
+            dur_match = re.search(r'Duration:\s*(\d+):(\d+):(\d+\.?\d*)', probe_out)
+            if dur_match:
+                hours = int(dur_match.group(1))
+                minutes = int(dur_match.group(2))
+                seconds = float(dur_match.group(3))
+                dur = int(hours * 3600 + minutes * 60 + seconds)
+            
+            if not w or not h:
+                res_match = re.search(r'Video:.*,\s*(\d{2,5})x(\d{2,5})', probe_out)
+                if res_match:
+                    w = int(res_match.group(1))
+                    h = int(res_match.group(2))
+        except Exception as probe_err:
+            logger.warning(f"Video metadata probe error: {probe_err}")
+
+        return w, h, dur, thumb_path
+    except Exception as e:
+        logger.warning(f"Failed to generate video thumbnail: {e}")
+    return None, None, None, None
+
 async def ensure_playable_video(input_path: str, output_path: str) -> bool:
-    """Remux video into 100% playable progressive MP4 with yuv420p & faststart."""
+    """
+    Remux video into 100% playable progressive MP4 with yuv420p & faststart.
+    Fixes Instagram/Telegram 'Cannot play video' errors on all mobile & desktop clients.
+    """
     if not is_ffmpeg_available():
         return False
 
     loop = asyncio.get_event_loop()
     def _remux():
         ffmpeg_bin = get_ffmpeg_binary()
-        cmd = [
+        
+        # Pass 1: Full H.264 Main profile + AAC stereo + yuv420p + faststart
+        cmd1 = [
             ffmpeg_bin, "-y",
             "-i", input_path,
             "-c:v", "libx264",
+            "-profile:v", "main",
+            "-level", "4.0",
             "-preset", "veryfast",
             "-crf", "22",
             "-pix_fmt", "yuv420p",
             "-c:a", "aac",
             "-b:a", "128k",
-            "-map", "0:v:0",
-            "-map", "0:a?",
+            "-ac", "2",
+            "-ar", "44100",
             "-movflags", "+faststart",
             output_path
         ]
-        success, _ = run_ffmpeg_command(cmd)
+        success, _ = run_ffmpeg_command(cmd1)
         if success and os.path.exists(output_path) and os.path.getsize(output_path) > 1024:
             return True
+
+        # Pass 2: Fallback conversion with automatic audio detection
+        cmd2 = [
+            ffmpeg_bin, "-y",
+            "-i", input_path,
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            output_path
+        ]
+        success, _ = run_ffmpeg_command(cmd2)
+        if success and os.path.exists(output_path) and os.path.getsize(output_path) > 1024:
+            return True
+
+        # Pass 3: Video-only transcode if audio stream is missing/corrupted
+        cmd3 = [
+            ffmpeg_bin, "-y",
+            "-i", input_path,
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-an",
+            "-movflags", "+faststart",
+            output_path
+        ]
+        success, _ = run_ffmpeg_command(cmd3)
+        if success and os.path.exists(output_path) and os.path.getsize(output_path) > 1024:
+            return True
+
+        # Pass 4: Fast stream copy with faststart container fix
+        cmd4 = [
+            ffmpeg_bin, "-y",
+            "-i", input_path,
+            "-c", "copy",
+            "-movflags", "+faststart",
+            output_path
+        ]
+        success, _ = run_ffmpeg_command(cmd4)
+        if success and os.path.exists(output_path) and os.path.getsize(output_path) > 1024:
+            return True
+
         return False
+
     return await loop.run_in_executor(None, _remux)
 
 # ==================== UNIFIED DOWNLOADER ENTRYPOINT ====================
@@ -810,6 +998,7 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
         # B. If Primary API returns error or fails, fallback to multi-layer scrapers
         scrapers = [
             direct_indown_scraper,
+            direct_snapsave_scraper,
             direct_instagram_graphql_scraper,
             direct_instagram_ajax_scraper,
             cobalt_instagram_scraper,
@@ -1033,8 +1222,6 @@ async def convert_video_media(
             ffmpeg_bin, "-y",
             "-i", input_path,
             "-vf", vf_str,
-            "-map", "0:v:0",
-            "-map", "0:a?",
             "-c:v", "libx264",
             "-preset", "veryfast",
             "-crf", crf_val,
@@ -1059,6 +1246,7 @@ async def convert_image_media(
 ) -> Tuple[bool, Optional[str]]:
     """
     Resize or format images and photos (1:1, 9:16, 4K, 1080p, 720p, 480p, compress).
+    Properly converts RGBA/palette modes to RGB for clean JPEG output.
     """
     loop = asyncio.get_event_loop()
 
@@ -1067,6 +1255,19 @@ async def convert_image_media(
             from PIL import Image, ImageOps
             img = Image.open(input_path)
             img = ImageOps.exif_transpose(img)
+
+            # Ensure image is in RGB mode before saving as JPEG
+            if img.mode in ("RGBA", "LA", "P"):
+                background = Image.new("RGB", img.size, (255, 255, 255))
+                if img.mode == "P":
+                    img = img.convert("RGBA")
+                if "A" in img.mode:
+                    background.paste(img, mask=img.split()[-1])
+                else:
+                    background.paste(img)
+                img = background
+            elif img.mode != "RGB":
+                img = img.convert("RGB")
 
             orig_w, orig_h = img.size
 
@@ -1124,7 +1325,10 @@ async def extract_audio_from_media(
     output_path: str,
     is_voice: bool = True
 ) -> bool:
-    """Extract sound into voice note or audio."""
+    """
+    Extract sound into Telegram voice note (.ogg with Opus) or MP3 audio (.mp3 with LAME).
+    Prevents container/codec incompatibility errors.
+    """
     if not is_ffmpeg_available():
         return False
 
@@ -1136,15 +1340,71 @@ async def extract_audio_from_media(
         
         ffmpeg_bin = get_ffmpeg_binary()
         
-        cmd = [
-            ffmpeg_bin, "-y",
-            "-i", input_path,
-            "-vn",
-            "-c:a", "aac" if is_voice else "libmp3lame",
-            "-b:a", "64k" if is_voice else "192k",
-            output_path
-        ]
-        success, _ = run_ffmpeg_command(cmd)
-        return success
+        if is_voice:
+            # Telegram voice notes require Opus in OGG container at 48000Hz mono
+            cmd1 = [
+                ffmpeg_bin, "-y",
+                "-i", input_path,
+                "-vn",
+                "-c:a", "libopus",
+                "-b:a", "64k",
+                "-ar", "48000",
+                "-ac", "1",
+                output_path
+            ]
+            success, _ = run_ffmpeg_command(cmd1)
+            if success and os.path.exists(output_path) and os.path.getsize(output_path) > 100:
+                return True
+
+            # Fallback 2: General ogg encoding
+            cmd2 = [
+                ffmpeg_bin, "-y",
+                "-i", input_path,
+                "-vn",
+                "-c:a", "opus",
+                "-b:a", "64k",
+                output_path
+            ]
+            success, _ = run_ffmpeg_command(cmd2)
+            if success and os.path.exists(output_path) and os.path.getsize(output_path) > 100:
+                return True
+
+            # Fallback 3: Copy audio stream
+            cmd3 = [
+                ffmpeg_bin, "-y",
+                "-i", input_path,
+                "-vn",
+                "-c:a", "copy",
+                output_path
+            ]
+            success, _ = run_ffmpeg_command(cmd3)
+            return success and os.path.exists(output_path) and os.path.getsize(output_path) > 100
+
+        else:
+            # MP3 audio with MP3 encoder
+            cmd1 = [
+                ffmpeg_bin, "-y",
+                "-i", input_path,
+                "-vn",
+                "-c:a", "libmp3lame",
+                "-b:a", "192k",
+                "-ar", "44100",
+                "-ac", "2",
+                output_path
+            ]
+            success, _ = run_ffmpeg_command(cmd1)
+            if success and os.path.exists(output_path) and os.path.getsize(output_path) > 100:
+                return True
+
+            # Fallback 2: Default mp3 transcode
+            cmd2 = [
+                ffmpeg_bin, "-y",
+                "-i", input_path,
+                "-vn",
+                "-b:a", "192k",
+                output_path
+            ]
+            success, _ = run_ffmpeg_command(cmd2)
+            return success and os.path.exists(output_path) and os.path.getsize(output_path) > 100
 
     return await loop.run_in_executor(None, _extract)
