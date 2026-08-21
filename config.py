@@ -166,3 +166,7 @@ def get_btn_emoji_id(name: str) -> Optional[str]:
     elif isinstance(item, (tuple, list)) and len(item) > 1:
         return item[1]
     return None
+
+def update_emoji_cache(name: str, char: str, emoji_id: str):
+    """Update in-memory premium emoji cache dynamically."""
+    PREMIUM_EMOJIS[name] = {"char": char, "id": str(emoji_id)}
