@@ -1,41 +1,41 @@
 import os
-import sys
 import logging
-from typing import Optional
+from typing import Dict, Tuple, Optional
+from dotenv import load_dotenv
 
-if sys.platform == "win32":
-    try:
-        sys.stdout.reconfigure(encoding='utf-8')
-        sys.stderr.reconfigure(encoding='utf-8')
-    except Exception:
-        pass
+# Load environment variables
+load_dotenv()
 
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
-
-# Logging setup
+# Logger setup
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-logger = logging.getLogger("SocialMediaDownloaderBot")
+logger = logging.getLogger("AutoProtectionBot")
 
-API_ID = int(os.getenv("API_ID", "32397550"))
-API_HASH = os.getenv("API_HASH", "1888c6fb45d30c4a0e46e999ba26e051")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8887193580:AAHVMkh8vSp9rVlHjVAM4B8r8XN_ZEyFsp8")
-SUPER_ADMIN_ID = int(os.getenv("SUPER_ADMIN_ID", "1988538065"))
-SUPER_ADMIN_IDS = {1988538065, 5157557268, SUPER_ADMIN_ID}
-LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0")) if os.getenv("LOG_CHANNEL_ID") else 0
+# Bot Configuration
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8887193580:AAHVMkh8vSp9rVlHjVAM4B8r8XN_ZEyFsp8") # Replace via env
+SUPER_ADMIN_ID = int(os.getenv("SUPER_ADMIN_ID", "5157557268"))
 
-# MongoDB Connection
-MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://notimepass367_db_user:abbsy%40123@cluster0.wof2cvr.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
+# Allow multiple comma-separated super admin IDs
+raw_admin_ids = os.getenv("SUPER_ADMIN_IDS", "")
+SUPER_ADMIN_IDS = set()
+if raw_admin_ids:
+    for aid in raw_admin_ids.split(","):
+        aid = aid.strip()
+        if aid.isdigit():
+            SUPER_ADMIN_IDS.add(int(aid))
+SUPER_ADMIN_IDS.add(SUPER_ADMIN_ID)
+
+LOG_CHANNEL_ID_STR = os.getenv("LOG_CHANNEL_ID", "-1003445839958")
+LOG_CHANNEL_ID = int(LOG_CHANNEL_ID_STR) if LOG_CHANNEL_ID_STR and LOG_CHANNEL_ID_STR.lstrip("-").isdigit() else None
+
+# MongoDB Configuration
+MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://test:test@cluster0.mongodb.net/?retryWrites=true&w=majority")
 MONGO_DB_URI = MONGO_URI
 DB_NAME = os.getenv("DB_NAME", "downloader_bot_db")
 
-WELCOME_IMAGE = os.getenv("WELCOME_IMAGE", "https://ibb.co/Xf62jMmQ")
+WELCOME_IMAGE = os.getenv("WELCOME_IMAGE", "https://i.ibb.co/Gfc7zqjp/Auto-Rq-Tools.png")
 
 # Primary APIs provided
 API_ENDPOINTS = {
@@ -45,7 +45,7 @@ API_ENDPOINTS = {
     "facebook": "https://api-owner-2.onrender.com/fb?video="
 }
 
-# 💎 48 Learned Premium Emojis mapping
+# 💎 Custom Premium Emojis mapping
 DEFAULT_PREMIUM_EMOJIS = {
     "mic": ("🎤", "6109651730872408665"),
     "diamond": ("💎", "5287627524795290725"),
@@ -96,31 +96,73 @@ DEFAULT_PREMIUM_EMOJIS = {
     "angry": ("😡", "5240408207666455054"),
     "trash": ("🗑", "5231010832107708935"),
     "down": ("⬇️", "6158868637290601091"),
+    "insta": ("📸", "6165899765042122114"),
+    "pin": ("📌", "6165582852290252628"),
+    "snap": ("👻", "6163600858027135317"),
+    "fb": ("📘", "6163336970941501725"),
+    "link": ("🔗", "5389118804590604722"),
+    "folder": ("📁", "5886223731088431288"),
+    "sound": ("🔊", "6109651730872408665"),
+    "tv": ("📺", "5114287571056198794"),
+    "user": ("👤", "5264942233387285985"),
+    "time": ("⏱", "6165894413512871182"),
+    "globe": ("🌐", "6163336970941501725"),
+    "one": ("1️⃣", "5345986836038694332"),
+    "two": ("2️⃣", "6158868637290601091"),
+    "three": ("3️⃣", "6163600858027135317"),
+    "four": ("4️⃣", "6109418703126796249"),
+    "box": ("📦", "5886223731088431288"),
+    "search": ("🔎", "6336887317948536124"),
+    "star": ("★", "6163600858027135317"),
+    "warn": ("⚠️", "6165894413512871182"),
+    "cross": ("❌", "5240408207666455054"),
+    "bullet": ("•", "6158935325247805180")
 }
 
-# Dynamic in-memory premium emojis registry (loaded from DB on startup)
-PREMIUM_EMOJIS_CACHE = dict(DEFAULT_PREMIUM_EMOJIS)
+PREMIUM_EMOJIS = {k: v for k, v in DEFAULT_PREMIUM_EMOJIS.items()}
 
 def get_p_emoji(name: str) -> str:
-    """Returns HTML tg-emoji tag if available, else plain unicode emoji (for HTML messages/captions)."""
-    if name in PREMIUM_EMOJIS_CACHE:
-        char, custom_id = PREMIUM_EMOJIS_CACHE[name]
-        if custom_id:
-            return f'<tg-emoji emoji-id="{custom_id}"></tg-emoji>'
-        return char
-    return DEFAULT_PREMIUM_EMOJIS.get(name, ("✨", ""))[0]
+    """Return custom premium emoji HTML tag <tg-emoji emoji-id='...'>...</tg-emoji>"""
+    item = PREMIUM_EMOJIS.get(name) if isinstance(PREMIUM_EMOJIS, dict) else None
+    if not item:
+        item = DEFAULT_PREMIUM_EMOJIS.get(name)
+    if not item:
+        return '<tg-emoji emoji-id="6154310409974190743">✨</tg-emoji>'
+    if isinstance(item, dict):
+        char = item.get("char", "✨")
+        emoji_id = item.get("id", "")
+    elif isinstance(item, (tuple, list)):
+        char = item[0]
+        emoji_id = item[1] if len(item) > 1 else ""
+    else:
+        return str(item)
+
+    if emoji_id:
+        return f'<tg-emoji emoji-id="{emoji_id}">{char}</tg-emoji>'
+    return char
 
 def get_btn_emoji(name: str) -> str:
-    """Returns clean unicode emoji character for Inline Keyboard buttons (since buttons do not support HTML tags)."""
-    if name in PREMIUM_EMOJIS_CACHE:
-        return PREMIUM_EMOJIS_CACHE[name][0]
-    return DEFAULT_PREMIUM_EMOJIS.get(name, ("✨", ""))[0]
+    """Return character for button fallback"""
+    item = PREMIUM_EMOJIS.get(name) if isinstance(PREMIUM_EMOJIS, dict) else None
+    if not item:
+        item = DEFAULT_PREMIUM_EMOJIS.get(name)
+    if not item:
+        return ""
+    if isinstance(item, dict):
+        return item.get("char", "")
+    elif isinstance(item, (tuple, list)):
+        return item[0]
+    return ""
 
 def get_btn_emoji_id(name: str) -> Optional[str]:
-    """Returns custom emoji ID for InlineKeyboardButton icon_custom_emoji_id parameter."""
-    if name in PREMIUM_EMOJIS_CACHE:
-        return PREMIUM_EMOJIS_CACHE[name][1] or None
-    return DEFAULT_PREMIUM_EMOJIS.get(name, ("✨", ""))[1] or None
-
-def update_emoji_cache(name: str, char: str, emoji_id: str):
-    PREMIUM_EMOJIS_CACHE[name] = (char, str(emoji_id))
+    """Return custom emoji ID for icon_custom_emoji_id attribute"""
+    item = PREMIUM_EMOJIS.get(name) if isinstance(PREMIUM_EMOJIS, dict) else None
+    if not item:
+        item = DEFAULT_PREMIUM_EMOJIS.get(name)
+    if not item:
+        return None
+    if isinstance(item, dict):
+        return item.get("id")
+    elif isinstance(item, (tuple, list)) and len(item) > 1:
+        return item[1]
+    return None
