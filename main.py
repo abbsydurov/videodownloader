@@ -366,7 +366,7 @@ async def command_stats_handler(message: Message):
     await safe_reply(message, text)
 
 def extract_urls(text: str) -> List[str]:
-    """Extract all valid social media URLs from message text with markdown & bracket cleaning."""
+    """Extract all valid social media & media URLs from message text with markdown & bracket cleaning."""
     if hasattr(downloader, 'extract_urls'):
         try:
             res = downloader.extract_urls(text)
@@ -379,9 +379,9 @@ def extract_urls(text: str) -> List[str]:
     raw_urls = re.findall(r'https?://[^\s\'"<>\[\]\(\)]+', clean_text)
     for u in raw_urls:
         u = u.strip().rstrip(".,;!?:")
-        p = downloader.detect_platform(u) if hasattr(downloader, 'detect_platform') else None
-        if p and u not in urls:
-            urls.append(u)
+        if u.startswith("http://") or u.startswith("https://"):
+            if u not in urls:
+                urls.append(u)
     return urls
 
 # ==================== DOWNLOADER & MULTI-QUEUE ROUTER ====================
