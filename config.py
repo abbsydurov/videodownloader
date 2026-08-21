@@ -14,7 +14,7 @@ logging.basicConfig(
 logger = logging.getLogger("AutoProtectionBot")
 
 # Bot Configuration
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8887193580:AAHVMkh8vSp9rVlHjVAM4B8r8XN_ZEyFsp8") # Replace via env
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8887193580:AAHVMkh8vSp9rVlHjVAM4B8r8XN_ZEyFsp8")
 SUPER_ADMIN_ID = int(os.getenv("SUPER_ADMIN_ID", "5157557268"))
 
 # Allow multiple comma-separated super admin IDs
@@ -31,7 +31,10 @@ LOG_CHANNEL_ID_STR = os.getenv("LOG_CHANNEL_ID", "-1003445839958")
 LOG_CHANNEL_ID = int(LOG_CHANNEL_ID_STR) if LOG_CHANNEL_ID_STR and LOG_CHANNEL_ID_STR.lstrip("-").isdigit() else None
 
 # MongoDB Configuration
-MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://test:test@cluster0.mongodb.net/?retryWrites=true&w=majority")
+MONGO_URI = os.getenv(
+    "MONGO_URI",
+    "mongodb+srv://notimepass367_db_user:abbsy%40123@cluster0.wof2cvr.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+)
 MONGO_DB_URI = MONGO_URI
 DB_NAME = os.getenv("DB_NAME", "downloader_bot_db")
 
