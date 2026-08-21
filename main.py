@@ -89,17 +89,52 @@ def get_admin_help_guide() -> str:
         f"{get_p_emoji('bullet')} <code>/broadcast</code> ── <i>Send announcement to all registered users</i>"
     )
 
-def make_btn(text: str, callback_data: str, style: str = "primary", emoji_name: str = None) -> InlineKeyboardButton:
-    """Create clean button with direct unicode emoji icon for universal Telegram compatibility."""
-    prefix = ""
+def make_btn(
+    text: str,
+    callback_data: Optional[str] = None,
+    url: Optional[str] = None,
+    style: str = "primary",
+    emoji_name: Optional[str] = None
+) -> InlineKeyboardButton:
+    """Create stylish Telegram Inline Button with native button colors (primary, success, danger) & premium emoji icons."""
+    kwargs = {
+        "text": text,
+        "style": style if style in ["primary", "success", "danger"] else "primary"
+    }
+    if callback_data:
+        kwargs["callback_data"] = callback_data
+    if url:
+        kwargs["url"] = url
+
     if emoji_name:
-        item = config.PREMIUM_EMOJIS.get(emoji_name) if hasattr(config, 'PREMIUM_EMOJIS') else None
-        if not item and hasattr(config, 'DEFAULT_PREMIUM_EMOJIS'):
-            item = config.DEFAULT_PREMIUM_EMOJIS.get(emoji_name)
-        if item and item[0]:
-            prefix = f"{item[0]} "
-    btn_text = f"{prefix}{text}" if prefix and not text.startswith(prefix) else text
-    return InlineKeyboardButton(text=btn_text, callback_data=callback_data)
+        emoji_id = config.get_btn_emoji_id(emoji_name) if hasattr(config, 'get_btn_emoji_id') else None
+        if emoji_id:
+            kwargs["icon_custom_emoji_id"] = emoji_id
+        else:
+            char = config.get_btn_emoji(emoji_name) if hasattr(config, 'get_btn_emoji') else None
+            if char:
+                kwargs["text"] = f"{char} {text}"
+
+    return InlineKeyboardButton(**kwargs)
+
+def clean_markup_for_fallback(reply_markup: Optional[InlineKeyboardMarkup]) -> Optional[InlineKeyboardMarkup]:
+    """Clean custom emoji IDs from markup if Telegram client raises BUTTON_DATA_INVALID."""
+    if not reply_markup or not hasattr(reply_markup, "inline_keyboard"):
+        return reply_markup
+    new_rows = []
+    for row in reply_markup.inline_keyboard:
+        new_row = []
+        for btn in row:
+            kwargs = {"text": btn.text}
+            if hasattr(btn, "style") and btn.style:
+                kwargs["style"] = btn.style
+            if btn.callback_data:
+                kwargs["callback_data"] = btn.callback_data
+            if btn.url:
+                kwargs["url"] = btn.url
+            new_row.append(InlineKeyboardButton(**kwargs))
+        new_rows.append(new_row)
+    return InlineKeyboardMarkup(inline_keyboard=new_rows)
 
 def get_downloader_keyboard(url: str, platform: str, video_url: str, cache_hash: str) -> InlineKeyboardMarkup:
     kb = [
