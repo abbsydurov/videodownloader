@@ -42,11 +42,15 @@ WELCOME_IMAGE = os.getenv("WELCOME_IMAGE", "https://i.ibb.co/Gfc7zqjp/Auto-Rq-To
 
 # Primary APIs provided
 API_ENDPOINTS = {
-    "instagram": "https://api-owner-2.onrender.com/insta?video=",
+    "instagram": os.getenv("INSTAGRAM_API_URL", "https://api-owner-2.onrender.com/insta?video="),
     "pinterest": "https://api-owner-2.onrender.com/pin?video=",
     "snapchat": "https://api-owner-2.onrender.com/snap?video=",
     "facebook": "https://api-owner-2.onrender.com/fb?video="
 }
+
+INSTAGRAM_SESSIONID = os.getenv("INSTAGRAM_SESSIONID", "")
+INSTAGRAM_COOKIES = os.getenv("INSTAGRAM_COOKIES", "")
+COOKIES_FILE = os.getenv("COOKIES_FILE", "")
 
 # 💎 Custom Premium Emojis mapping
 DEFAULT_PREMIUM_EMOJIS = {
