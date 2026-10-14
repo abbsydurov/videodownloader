@@ -300,7 +300,7 @@ async def direct_instagram_graphql_scraper(url: str) -> Optional[Dict[str, Any]]
         urls_to_try.insert(0, f"https://www.instagram.com/api/v1/media/{media_id}/info/")
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
         "X-IG-App-ID": "936619743392459",
         "X-ASBD-ID": "129477",
         "X-IG-WWW-Claim": "0",
@@ -308,6 +308,16 @@ async def direct_instagram_graphql_scraper(url: str) -> Optional[Dict[str, Any]]
         "Accept-Language": "en-US,en;q=0.9",
         "Referer": f"https://www.instagram.com/p/{shortcode}/"
     }
+
+    session_id = os.getenv("INSTAGRAM_SESSIONID", "").strip()
+    raw_cookies = os.getenv("INSTAGRAM_COOKIES", "").strip()
+    cookie_parts = []
+    if session_id:
+        cookie_parts.append(f"sessionid={session_id}")
+    if raw_cookies:
+        cookie_parts.append(raw_cookies)
+    if cookie_parts:
+        headers["Cookie"] = "; ".join(cookie_parts)
 
     for target in urls_to_try:
         try:
@@ -403,74 +413,51 @@ async def direct_instagram_graphql_scraper(url: str) -> Optional[Dict[str, Any]]
     return None
 
 async def direct_instagram_ajax_scraper(url: str) -> Optional[Dict[str, Any]]:
-    """Scrape Instagram media via high-reliability public AJAX APIs for both Photos and Videos."""
+    """Scrape Instagram media via public AJAX APIs for both Photos and Videos."""
     clean_url = url.split("?")[0]
     
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-            "X-Requested-With": "XMLHttpRequest",
-            "Referer": "https://saveig.app/en"
-        }
-        data = {"q": clean_url, "t": "media", "lang": "en"}
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.post("https://saveig.app/api/ajaxSearch", data=data, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status == 200:
-                    json_data = await resp.json()
-                    html_content = json_data.get("data", "")
-                    if html_content:
-                        v_links = re.findall(r'href=["\'](https?://[^\s"\'<>]+)["\'][^>]*class=["\'][^"\']*abutton[^"\']*["\']', html_content) or \
-                                  re.findall(r'href=["\'](https?://[^\s"\'<>]+download[^\s"\'<>]*)["\']', html_content) or \
-                                  re.findall(r'href=["\'](https?://[^\s"\'<>]+\.mp4[^\s"\'<>]*)["\']', html_content)
-                        
-                        if v_links:
-                            return {
-                                "status": "success",
-                                "media_type": "video",
-                                "video_url": v_links[0].replace("&amp;", "&"),
-                                "title": "Instagram Video",
-                                "source": "saveig_ajax"
-                            }
-                        
-                        img_links = re.findall(r'href=["\'](https?://[^\s"\'<>]+\.(?:jpg|jpeg|webp|png)[^\s"\'<>]*)["\']', html_content) or \
-                                    re.findall(r'src=["\'](https?://[^\s"\'<>]+\.(?:jpg|jpeg|webp|png)[^\s"\'<>]*)["\']', html_content)
-                        if img_links:
-                            return {
-                                "status": "success",
-                                "media_type": "photo",
-                                "image_url": img_links[0].replace("&amp;", "&"),
-                                "title": "Instagram Photo",
-                                "source": "saveig_ajax"
-                            }
-    except Exception as e:
-        logger.warning(f"SaveIG AJAX scraper error: {e}")
-
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Referer": "https://snapinsta.app/"
-        }
-        data = {"url": clean_url, "action": "post"}
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.post("https://snapinsta.app/action.php", data=data, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status == 200:
-                    html_content = await resp.text()
-                    links = re.findall(r'href=["\'](https?://[^\s"\'<>]+)["\'][^>]*download', html_content)
-                    if links:
-                        link_url = links[0].replace("&amp;", "&")
-                        is_img = any(ext in link_url.lower() for ext in [".jpg", ".jpeg", ".png", ".webp"])
-                        return {
-                            "status": "success",
-                            "media_type": "photo" if is_img else "video",
-                            "video_url": None if is_img else link_url,
-                            "image_url": link_url if is_img else None,
-                            "title": "Instagram Media",
-                            "source": "snapinsta_ajax"
-                        }
-    except Exception as e:
-        logger.warning(f"SnapInsta AJAX scraper error: {e}")
+    # 1. Try fastdl.to / snapsave ajax endpoints
+    for ajax_ep in ["https://fastdl.to/api/ajaxSearch", "https://saveclip.app/api/ajaxSearch", "https://saveig.app/api/ajaxSearch"]:
+        try:
+            domain = ajax_ep.split("/api")[0]
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": f"{domain}/"
+            }
+            data = {"q": clean_url, "p": "home", "t": "media", "lang": "en"}
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False), headers=headers) as session:
+                async with session.post(ajax_ep, data=data, timeout=aiohttp.ClientTimeout(total=4)) as resp:
+                    if resp.status == 200:
+                        json_data = await resp.json()
+                        html_content = json_data.get("data", "")
+                        if html_content:
+                            v_links = re.findall(r'href=["\'](https?://[^\s"\'<>]+)["\'][^>]*class=["\'][^"\']*abutton[^"\']*["\']', html_content) or \
+                                      re.findall(r'href=["\'](https?://[^\s"\'<>]+download[^\s"\'<>]*)["\']', html_content) or \
+                                      re.findall(r'href=["\'](https?://[^\s"\'<>]+\.mp4[^\s"\'<>]*)["\']', html_content)
+                            
+                            if v_links:
+                                return {
+                                    "status": "success",
+                                    "media_type": "video",
+                                    "video_url": v_links[0].replace("&amp;", "&"),
+                                    "title": "Instagram Video",
+                                    "source": "instagram_ajax"
+                                }
+                            
+                            img_links = re.findall(r'href=["\'](https?://[^\s"\'<>]+\.(?:jpg|jpeg|webp|png)[^\s"\'<>]*)["\']', html_content) or \
+                                        re.findall(r'src=["\'](https?://[^\s"\'<>]+\.(?:jpg|jpeg|webp|png)[^\s"\'<>]*)["\']', html_content)
+                            if img_links:
+                                return {
+                                    "status": "success",
+                                    "media_type": "photo",
+                                    "image_url": img_links[0].replace("&amp;", "&"),
+                                    "title": "Instagram Photo",
+                                    "source": "instagram_ajax"
+                                }
+        except Exception:
+            continue
 
     return None
 
@@ -566,50 +553,67 @@ async def direct_instagram_embed_scraper(url: str) -> Optional[Dict[str, Any]]:
     return None
 
 async def direct_instagram_api_scraper(url: str) -> Optional[Dict[str, Any]]:
-    """Query Instagram web info JSON endpoint."""
+    """Query Instagram web and mobile info JSON endpoints."""
     shortcode = extract_instagram_shortcode(url)
     if not shortcode:
         return None
 
-    info_url = f"https://www.instagram.com/p/{shortcode}/?__a=1&__d=dis"
+    media_id = shortcode_to_media_id(shortcode)
+    api_targets = [f"https://www.instagram.com/p/{shortcode}/?__a=1&__d=dis"]
+    if media_id:
+        api_targets.insert(0, f"https://i.instagram.com/api/v1/media/{media_id}/info/")
+
     headers = {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
         "Accept": "*/*",
         "X-IG-App-ID": "936619743392459",
         "Sec-Fetch-Site": "same-origin"
     }
-    try:
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(info_url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    if isinstance(data, dict):
-                        items = data.get("items", [])
-                        if items:
-                            item = items[0]
-                            caption = item.get("caption", {}).get("text", "Instagram Media") if isinstance(item.get("caption"), dict) else "Instagram Media"
-                            v_versions = item.get("video_versions", [])
-                            if v_versions:
-                                best_v = sorted(v_versions, key=lambda x: x.get("height", 0), reverse=True)[0]
-                                return {
-                                    "status": "success",
-                                    "media_type": "video",
-                                    "video_url": best_v.get("url"),
-                                    "title": caption,
-                                    "source": "instagram_api"
-                                }
-                            cands = item.get("image_versions2", {}).get("candidates", [])
-                            if cands:
-                                best_img = sorted(cands, key=lambda x: x.get("height", 0), reverse=True)[0]
-                                return {
-                                    "status": "success",
-                                    "media_type": "photo",
-                                    "image_url": best_img.get("url"),
-                                    "title": caption,
-                                    "source": "instagram_api"
-                                }
-    except Exception as e:
-        logger.warning(f"Instagram info API error: {e}")
+    session_id = os.getenv("INSTAGRAM_SESSIONID", "").strip()
+    raw_cookies = os.getenv("INSTAGRAM_COOKIES", "").strip()
+    cookie_parts = []
+    if session_id:
+        cookie_parts.append(f"sessionid={session_id}")
+    if raw_cookies:
+        cookie_parts.append(raw_cookies)
+    if cookie_parts:
+        headers["Cookie"] = "; ".join(cookie_parts)
+
+    for info_url in api_targets:
+        try:
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False), headers=headers) as session:
+                async with session.get(info_url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if isinstance(data, dict):
+                            items = data.get("items", [])
+                            if items:
+                                item = items[0]
+                                caption = item.get("caption", {}).get("text", "Instagram Media") if isinstance(item.get("caption"), dict) else "Instagram Media"
+                                v_versions = item.get("video_versions", [])
+                                if v_versions:
+                                    best_v = sorted(v_versions, key=lambda x: x.get("height", 0), reverse=True)[0]
+                                    return {
+                                        "status": "success",
+                                        "media_type": "video",
+                                        "video_url": best_v.get("url"),
+                                        "title": caption,
+                                        "source": "instagram_api"
+                                    }
+                                cands = item.get("image_versions2", {}).get("candidates", [])
+                                if cands:
+                                    best_img = sorted(cands, key=lambda x: x.get("height", 0), reverse=True)[0]
+                                    return {
+                                        "status": "success",
+                                        "media_type": "photo",
+                                        "image_url": best_img.get("url"),
+                                        "title": caption,
+                                        "source": "instagram_api"
+                                    }
+        except Exception as e:
+            logger.warning(f"Instagram info API error on {info_url}: {e}")
+            continue
+
     return None
 
 # ==================== FACEBOOK DIRECT SCRAPER ====================
@@ -707,40 +711,64 @@ async def direct_pinterest_scraper(url: str) -> Optional[Dict[str, Any]]:
 
 # ==================== PRIMARY API ENDPOINT ====================
 async def fetch_api_downloader(platform: str, url: str) -> Optional[Dict[str, Any]]:
-    """Query the primary render API endpoint with extended timeout and strict media validation."""
-    api_base = API_ENDPOINTS.get(platform)
-    if not api_base:
+    """Query the primary render API endpoint with multi-candidate fallback and strict media validation."""
+    api_candidates = []
+    if platform == "instagram":
+        custom_api = os.getenv("INSTAGRAM_API_URL", "").strip()
+        if custom_api:
+            api_candidates.append(custom_api)
+        primary_endpoint = API_ENDPOINTS.get("instagram", "")
+        if primary_endpoint and primary_endpoint not in api_candidates:
+            api_candidates.append(primary_endpoint)
+    else:
+        api_base = API_ENDPOINTS.get(platform)
+        if api_base:
+            api_candidates.append(api_base)
+
+    if not api_candidates:
         return None
-    
+
     clean_target = url.split("?")[0] if platform == "instagram" else url
-    target_url = f"{api_base}{clean_target}"
-    try:
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
-            async with session.get(target_url, timeout=aiohttp.ClientTimeout(total=25)) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    if isinstance(data, dict) and data.get("status") != "error" and "error" not in str(data.get("message", "")).lower():
-                        media_url = data.get("video_url") or data.get("url") or data.get("video") or data.get("download_url") or data.get("data") or data.get("image_url") or data.get("image")
-                        if media_url and is_valid_media_url(media_url):
-                            is_img = any(ext in media_url.lower() for ext in [".jpg", ".jpeg", ".png", ".webp"])
-                            return {
-                                "status": "success",
-                                "media_type": "photo" if is_img else "video",
-                                "video_url": None if is_img else media_url,
-                                "image_url": media_url if is_img else None,
-                                "title": data.get("title", f"{platform.title()} Media"),
-                                "thumbnail": data.get("thumbnail") or data.get("thumb")
-                            }
-    except Exception as e:
-        logger.warning(f"Primary API error for {platform} ({url}): {e}")
+
+    for api_base in api_candidates:
+        target_url = f"{api_base}{clean_target}"
+        try:
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+                async with session.get(target_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if isinstance(data, dict) and data.get("status") != "error" and "error" not in str(data.get("message", "")).lower():
+                            media_url = (
+                                data.get("video_url") or data.get("url") or data.get("video") or 
+                                data.get("download_url") or data.get("data") or data.get("image_url") or data.get("image")
+                            )
+                            if isinstance(media_url, list) and media_url:
+                                media_url = media_url[0]
+                            if media_url and is_valid_media_url(str(media_url)):
+                                media_url = str(media_url)
+                                is_img = any(ext in media_url.lower() for ext in [".jpg", ".jpeg", ".png", ".webp"])
+                                return {
+                                    "status": "success",
+                                    "media_type": "photo" if is_img else "video",
+                                    "video_url": None if is_img else media_url,
+                                    "image_url": media_url if is_img else None,
+                                    "title": data.get("title", f"{platform.title()} Media"),
+                                    "thumbnail": data.get("thumbnail") or data.get("thumb")
+                                }
+        except Exception as e:
+            logger.warning(f"Primary API attempt error for {platform} on {api_base}: {e}")
+            continue
+
     return None
 
 # ==================== YT-DLP FALLBACK ENGINE ====================
 async def fallback_ytdlp_downloader(url: str, download_file: bool = True) -> Optional[Dict[str, Any]]:
-    """Fallback engine using yt-dlp with audio merge guarantee and Instagram extractor support."""
+    """Fallback engine using yt-dlp with sessionid cookie synthesis and audio merge guarantee."""
     loop = asyncio.get_event_loop()
     
     def run_yt_dlp():
+        temp_cookie_path = None
+        temp_cookie_created = False
         try:
             import yt_dlp
             
@@ -754,19 +782,52 @@ async def fallback_ytdlp_downloader(url: str, download_file: bool = True) -> Opt
                 'merge_output_format': 'mp4',
                 'skip_download': not download_file,
                 'outtmpl': out_template,
-                'extractor_args': {
-                    'instagram': {'player_client': ['ios', 'android', 'web']}
-                },
                 'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 324.0.0.18.109',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
                     'Accept-Language': 'en-US,en;q=0.9'
                 }
             }
             
-            for c_file in ["cookies.txt", "instagram_cookies.txt", "insta_cookies.txt", os.getenv("COOKIES_FILE", "")]:
-                if c_file and os.path.exists(c_file):
-                    ydl_opts['cookiefile'] = c_file
+            # 1. Search for pre-existing cookies files
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            candidate_files = [
+                os.path.join(base_dir, "cookies.txt"),
+                os.path.join(base_dir, "instagram_cookies.txt"),
+                os.path.join(base_dir, "insta_cookies.txt"),
+                "cookies.txt",
+                "instagram_cookies.txt",
+                "insta_cookies.txt",
+                os.getenv("COOKIES_FILE", "")
+            ]
+            cookie_path = None
+            for c_file in candidate_files:
+                if c_file and os.path.exists(c_file) and os.path.getsize(c_file) > 10:
+                    cookie_path = c_file
                     break
+
+            # 2. If no cookie file exists, check INSTAGRAM_SESSIONID or INSTAGRAM_COOKIES
+            session_id = os.getenv("INSTAGRAM_SESSIONID", "").strip()
+            raw_cookies = os.getenv("INSTAGRAM_COOKIES", "").strip()
+            if not cookie_path and (session_id or raw_cookies):
+                temp_cookie_path = os.path.join(temp_dir, f"ig_cookie_{int(time.time())}_{os.getpid()}.txt")
+                try:
+                    with open(temp_cookie_path, "w", encoding="utf-8") as cf:
+                        cf.write("# Netscape HTTP Cookie File\n")
+                        if session_id:
+                            cf.write(f".instagram.com\tTRUE\t/\tTRUE\t2147483647\tsessionid\t{session_id}\n")
+                        if raw_cookies:
+                            for item in raw_cookies.split(";"):
+                                item = item.strip()
+                                if "=" in item:
+                                    k, v = item.split("=", 1)
+                                    cf.write(f".instagram.com\tTRUE\t/\tTRUE\t2147483647\t{k.strip()}\t{v.strip()}\n")
+                    cookie_path = temp_cookie_path
+                    temp_cookie_created = True
+                except Exception as ce:
+                    logger.warning(f"Failed to generate temp cookie file: {ce}")
+
+            if cookie_path:
+                ydl_opts['cookiefile'] = cookie_path
 
             if is_ffmpeg_available() and download_file:
                 ydl_opts['postprocessors'] = [{
@@ -833,6 +894,12 @@ async def fallback_ytdlp_downloader(url: str, download_file: bool = True) -> Opt
         except Exception as e:
             logger.error(f"yt-dlp exception for {url}: {e}")
             return None
+        finally:
+            if temp_cookie_created and temp_cookie_path and os.path.exists(temp_cookie_path):
+                try:
+                    os.remove(temp_cookie_path)
+                except Exception:
+                    pass
 
     return await loop.run_in_executor(None, run_yt_dlp)
 
