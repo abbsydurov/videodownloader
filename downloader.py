@@ -3,6 +3,7 @@ import re
 import os
 import sys
 import time
+import json
 import shutil
 import tempfile
 import logging
@@ -199,7 +200,7 @@ async def direct_snapsave_scraper(url: str) -> Optional[Dict[str, Any]]:
     }
     try:
         async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False), headers=headers) as s:
-            async with s.post("https://snapsave.app/action.php", data={"url": clean_url}, timeout=aiohttp.ClientTimeout(total=12)) as r:
+            async with s.post("https://snapsave.app/action.php", data={"url": clean_url}, timeout=aiohttp.ClientTimeout(total=4)) as r:
                 if r.status == 200:
                     raw_js = await r.text()
                     decoded_html = decode_snapsave_js(raw_js)
@@ -238,7 +239,7 @@ async def direct_indown_scraper(url: str) -> Optional[Dict[str, Any]]:
     }
     try:
         async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False), headers=headers) as session:
-            async with session.get("https://indown.io/reels", timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            async with session.get("https://indown.io/reels", timeout=aiohttp.ClientTimeout(total=3)) as resp:
                 if resp.status == 200:
                     html = await resp.text()
                     token_m = re.search(r'name="_token"\s+value="([^"]+)"', html)
@@ -250,7 +251,7 @@ async def direct_indown_scraper(url: str) -> Optional[Dict[str, Any]]:
                             "_token": token,
                             "link": clean_url
                         }
-                        async with session.post("https://indown.io/download", data=post_data, timeout=aiohttp.ClientTimeout(total=15)) as post_resp:
+                        async with session.post("https://indown.io/download", data=post_data, timeout=aiohttp.ClientTimeout(total=4)) as post_resp:
                             if post_resp.status == 200:
                                 post_html = await post_resp.text()
                                 
@@ -283,6 +284,233 @@ async def direct_indown_scraper(url: str) -> Optional[Dict[str, Any]]:
                                         }
     except Exception as e:
         logger.warning(f"InDown scraper error: {e}")
+    return None
+
+# ==================== INSTAGRAM POLARIS GRAPHQL SCRAPER ====================
+_POLARIS_SESSION = {
+    "cookie_header": "",
+    "lsd": "",
+    "csrf": "",
+    "expires_at": 0.0
+}
+
+async def _get_polaris_session(session: aiohttp.ClientSession) -> Tuple[str, str, str]:
+    """Retrieve or reuse active Instagram web session (LSD token, CSRF token, and cookies)."""
+    global _POLARIS_SESSION
+    now = time.time()
+    if _POLARIS_SESSION["expires_at"] > now and _POLARIS_SESSION["lsd"]:
+        return _POLARIS_SESSION["cookie_header"], _POLARIS_SESSION["lsd"], _POLARIS_SESSION["csrf"]
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Origin": "https://www.instagram.com",
+        "Referer": "https://www.instagram.com/",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+    }
+    
+    session_id = os.getenv("INSTAGRAM_SESSIONID", "").strip()
+    raw_cookies = os.getenv("INSTAGRAM_COOKIES", "").strip()
+    custom_cookies = []
+    if session_id:
+        custom_cookies.append(f"sessionid={session_id}")
+    if raw_cookies:
+        custom_cookies.append(raw_cookies)
+
+    try:
+        async with session.get("https://www.instagram.com/", headers=headers, timeout=aiohttp.ClientTimeout(total=4)) as resp:
+            html = await resp.text()
+            
+            cookie_items = []
+            if custom_cookies:
+                cookie_items.extend(custom_cookies)
+            
+            csrf = ""
+            for cookie in session.cookie_jar:
+                cookie_items.append(f"{cookie.key}={cookie.value}")
+                if cookie.key == "csrftoken":
+                    csrf = cookie.value
+
+            cookie_header = "; ".join(cookie_items)
+
+            lsd = ""
+            m = re.search(r'\["LSD",\[\],\{"token":"([^"]+)"', html) or re.search(r'"LSD",\[\],\{"token":"([^"]+)"', html)
+            if m:
+                lsd = m.group(1)
+
+            if lsd:
+                _POLARIS_SESSION["cookie_header"] = cookie_header
+                _POLARIS_SESSION["lsd"] = lsd
+                _POLARIS_SESSION["csrf"] = csrf
+                _POLARIS_SESSION["expires_at"] = now + 900
+                return cookie_header, lsd, csrf
+    except Exception as e:
+        logger.warning(f"Polaris session initialization warning: {e}")
+
+    return _POLARIS_SESSION.get("cookie_header", ""), _POLARIS_SESSION.get("lsd", ""), _POLARIS_SESSION.get("csrf", "")
+
+async def direct_instagram_polaris_scraper(url: str) -> Optional[Dict[str, Any]]:
+    """
+    Official Logged-Out Polaris GraphQL Scraper (doc_id: 27130156389949648).
+    Extracts full-length original HD Reels, Videos, Photos, and Carousels directly.
+    """
+    shortcode = extract_instagram_shortcode(url)
+    if not shortcode:
+        return None
+
+    media_id = shortcode_to_media_id(shortcode)
+    if not media_id:
+        return None
+
+    base_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Origin": "https://www.instagram.com",
+        "Referer": "https://www.instagram.com/",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-site",
+    }
+
+    try:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+            cookie_header, lsd, csrf = await _get_polaris_session(session)
+            if not lsd:
+                return None
+
+            # 1. Content ruling pre-flight
+            ruling_headers = {
+                **base_headers,
+                "X-IG-App-ID": "936619743392459",
+                "X-ASBD-ID": "198387",
+                "X-IG-WWW-Claim": "0",
+            }
+            if cookie_header:
+                ruling_headers["Cookie"] = cookie_header
+
+            ruling_url = f"https://i.instagram.com/api/v1/web/get_ruling_for_content/?content_type=MEDIA&target_id={media_id}"
+            try:
+                async with session.get(ruling_url, headers=ruling_headers, timeout=aiohttp.ClientTimeout(total=3)) as r_resp:
+                    pass
+            except Exception:
+                pass
+
+            # 2. GraphQL Polaris Request
+            graphql_headers = {
+                **base_headers,
+                "X-IG-App-ID": "936619743392459",
+                "X-ASBD-ID": "198387",
+                "X-IG-WWW-Claim": "0",
+                "X-FB-Friendly-Name": "PolarisLoggedOutDesktopWWWPostRootContentQuery",
+                "X-FB-LSD": lsd,
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": f"https://www.instagram.com/reel/{shortcode}/",
+                "Content-Type": "application/x-www-form-urlencoded"
+            }
+            if csrf:
+                graphql_headers["X-CSRFToken"] = csrf
+            if cookie_header:
+                graphql_headers["Cookie"] = cookie_header
+
+            payload = {
+                "lsd": lsd,
+                "fb_api_caller_class": "RelayModern",
+                "fb_api_req_friendly_name": "PolarisLoggedOutDesktopWWWPostRootContentQuery",
+                "server_timestamps": "true",
+                "variables": json.dumps({"media_id": str(media_id)}, separators=(',', ':')),
+                "doc_id": "27130156389949648"
+            }
+
+            async with session.post("https://www.instagram.com/api/graphql", headers=graphql_headers, data=payload, timeout=aiohttp.ClientTimeout(total=5)) as g_resp:
+                if g_resp.status != 200:
+                    return None
+
+                data = await g_resp.json()
+                media = (data.get("data") or {}).get("xig_polaris_media") or {}
+                product = media.get("if_not_gated_logged_out") or {}
+                if not product:
+                    return None
+
+                caption_obj = product.get("caption") or {}
+                title = caption_obj.get("text", "")[:120] if isinstance(caption_obj, dict) else "Instagram Media"
+                if not title:
+                    uploader = (product.get("user") or {}).get("username", "")
+                    title = f"Instagram Post by @{uploader}" if uploader else "Instagram Media"
+
+                thumbnail = product.get("display_uri")
+                duration = product.get("video_duration")
+                width = product.get("original_width")
+                height = product.get("original_height")
+
+                # Case A: Video / Reel
+                video_versions = product.get("video_versions") or []
+                if video_versions:
+                    best_v = sorted(video_versions, key=lambda x: (x.get("width", 0) * x.get("height", 0)), reverse=True)[0]
+                    v_url = best_v.get("url")
+                    if v_url and is_valid_media_url(v_url):
+                        return {
+                            "status": "success",
+                            "media_type": "video",
+                            "video_url": v_url,
+                            "title": title,
+                            "thumbnail": thumbnail,
+                            "duration": duration,
+                            "width": width,
+                            "height": height,
+                            "source": "instagram_polaris"
+                        }
+
+                # Case B: Carousel / Album
+                carousel_media = product.get("carousel_media") or []
+                if carousel_media:
+                    media_list = []
+                    for c_item in carousel_media:
+                        c_vids = c_item.get("video_versions") or []
+                        if c_vids:
+                            c_best_v = sorted(c_vids, key=lambda x: (x.get("width", 0) * x.get("height", 0)), reverse=True)[0]
+                            media_list.append({"type": "video", "url": c_best_v.get("url")})
+                        else:
+                            c_cands = (c_item.get("image_versions2") or {}).get("candidates") or []
+                            if c_cands:
+                                c_best_img = sorted(c_cands, key=lambda x: (x.get("width", 0) * x.get("height", 0)), reverse=True)[0]
+                                media_list.append({"type": "photo", "url": c_best_img.get("url")})
+
+                    if media_list:
+                        first_item = media_list[0]
+                        return {
+                            "status": "success",
+                            "media_type": "carousel" if len(media_list) > 1 else first_item["type"],
+                            "media_list": media_list,
+                            "video_url": first_item["url"] if first_item["type"] == "video" else None,
+                            "image_url": first_item["url"] if first_item["type"] == "photo" else None,
+                            "title": title,
+                            "thumbnail": thumbnail,
+                            "source": "instagram_polaris"
+                        }
+
+                # Case C: Single Photo
+                candidates = (product.get("image_versions2") or {}).get("candidates") or []
+                if candidates:
+                    best_img = sorted(candidates, key=lambda x: (x.get("width", 0) * x.get("height", 0)), reverse=True)[0]
+                    img_url = best_img.get("url")
+                    if img_url and is_valid_media_url(img_url):
+                        return {
+                            "status": "success",
+                            "media_type": "photo",
+                            "image_url": img_url,
+                            "title": title,
+                            "thumbnail": thumbnail,
+                            "width": width,
+                            "height": height,
+                            "source": "instagram_polaris"
+                        }
+    except Exception as e:
+        logger.warning(f"Polaris scraper execution error: {e}")
+
     return None
 
 async def direct_instagram_graphql_scraper(url: str) -> Optional[Dict[str, Any]]:
@@ -332,7 +560,7 @@ async def direct_instagram_graphql_scraper(url: str) -> Optional[Dict[str, Any]]
     for target in urls_to_try:
         try:
             async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False), headers=headers) as session:
-                async with session.get(target, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                async with session.get(target, timeout=aiohttp.ClientTimeout(total=3)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         if isinstance(data, dict):
@@ -496,7 +724,7 @@ async def cobalt_instagram_scraper(url: str) -> Optional[Dict[str, Any]]:
                 payload = {"url": url, "vQuality": "max"}
 
             async with aiohttp.ClientSession(headers=headers) as session:
-                async with session.post(endpoint, json=payload, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                async with session.post(endpoint, json=payload, timeout=aiohttp.ClientTimeout(total=2)) as resp:
                     if resp.status == 200:
                         res = await resp.json()
                         v_url = res.get("url")
@@ -733,12 +961,13 @@ async def fetch_api_downloader(platform: str, url: str) -> Optional[Dict[str, An
         return None
 
     clean_target = url.split("?")[0] if platform == "instagram" else url
+    api_timeout = 3 if platform == "instagram" else 12
 
     for api_base in api_candidates:
         target_url = f"{api_base}{clean_target}"
         try:
             async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
-                async with session.get(target_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                async with session.get(target_url, timeout=aiohttp.ClientTimeout(total=api_timeout)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         if isinstance(data, dict) and data.get("status") != "error" and "error" not in str(data.get("message", "")).lower():
@@ -788,6 +1017,8 @@ async def fallback_ytdlp_downloader(url: str, download_file: bool = True) -> Opt
                 'outtmpl': out_template,
                 'noplaylist': True,
                 'extract_flat': False,
+                'socket_timeout': 5,
+                'retries': 1,
                 'http_headers': {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
                     'Accept-Language': 'en-US,en;q=0.9'
@@ -977,8 +1208,20 @@ async def ensure_playable_video(input_path: str, output_path: str) -> bool:
     def _remux():
         ffmpeg_bin = get_ffmpeg_binary()
         
-        # Pass 1: Full H.264 Main profile + AAC stereo + yuv420p + faststart
+        # Pass 1: Ultra-fast stream copy with faststart container fix (0.05s, 0% CPU)
         cmd1 = [
+            ffmpeg_bin, "-y",
+            "-i", input_path,
+            "-c", "copy",
+            "-movflags", "+faststart",
+            output_path
+        ]
+        success, _ = run_ffmpeg_command(cmd1)
+        if success and os.path.exists(output_path) and os.path.getsize(output_path) > 1024:
+            return True
+
+        # Pass 2: Full H.264 Main profile + AAC stereo + yuv420p + faststart (if stream copy was not enough)
+        cmd2 = [
             ffmpeg_bin, "-y",
             "-i", input_path,
             "-c:v", "libx264",
@@ -994,26 +1237,11 @@ async def ensure_playable_video(input_path: str, output_path: str) -> bool:
             "-movflags", "+faststart",
             output_path
         ]
-        success, _ = run_ffmpeg_command(cmd1)
-        if success and os.path.exists(output_path) and os.path.getsize(output_path) > 1024:
-            return True
-
-        # Pass 2: Fallback conversion with automatic audio detection
-        cmd2 = [
-            ffmpeg_bin, "-y",
-            "-i", input_path,
-            "-c:v", "libx264",
-            "-preset", "veryfast",
-            "-crf", "23",
-            "-pix_fmt", "yuv420p",
-            "-movflags", "+faststart",
-            output_path
-        ]
         success, _ = run_ffmpeg_command(cmd2)
         if success and os.path.exists(output_path) and os.path.getsize(output_path) > 1024:
             return True
 
-        # Pass 3: Video-only transcode if audio stream is missing/corrupted
+        # Pass 3: Fallback conversion with automatic audio detection
         cmd3 = [
             ffmpeg_bin, "-y",
             "-i", input_path,
@@ -1021,7 +1249,6 @@ async def ensure_playable_video(input_path: str, output_path: str) -> bool:
             "-preset", "veryfast",
             "-crf", "23",
             "-pix_fmt", "yuv420p",
-            "-an",
             "-movflags", "+faststart",
             output_path
         ]
@@ -1029,11 +1256,15 @@ async def ensure_playable_video(input_path: str, output_path: str) -> bool:
         if success and os.path.exists(output_path) and os.path.getsize(output_path) > 1024:
             return True
 
-        # Pass 4: Fast stream copy with faststart container fix
+        # Pass 4: Video-only transcode if audio stream is missing/corrupted
         cmd4 = [
             ffmpeg_bin, "-y",
             "-i", input_path,
-            "-c", "copy",
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-an",
             "-movflags", "+faststart",
             output_path
         ]
@@ -1072,7 +1303,41 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
 
     # ---------------- 1. INSTAGRAM PIPELINE ----------------
     if platform == "instagram":
-        # A. Try User's Primary Render API First
+        # A. Official Polaris GraphQL Extractor (Instant, Original Full HD, Full Duration)
+        try:
+            polaris_res = await direct_instagram_polaris_scraper(expanded_url)
+            if polaris_res and polaris_res.get("status") == "success":
+                polaris_res["platform"] = platform
+                if polaris_res.get("video_url"):
+                    raw_target = os.path.join(temp_dir, f"insta_raw_{int(time.time())}.mp4")
+                    if await download_url_to_file(polaris_res["video_url"], raw_target):
+                        _, _, dur_check, _ = get_video_metadata_and_thumb(raw_target)
+                        if dur_check is None or dur_check > 2:
+                            play_target = os.path.join(temp_dir, f"insta_play_{int(time.time())}.mp4")
+                            if await ensure_playable_video(raw_target, play_target):
+                                try: os.remove(raw_target)
+                                except Exception: pass
+                                polaris_res["local_file"] = play_target
+                            else:
+                                polaris_res["local_file"] = raw_target
+                            return polaris_res
+                        else:
+                            logger.warning(f"Polaris returned short video ({dur_check}s). Trying fallbacks...")
+                            try: os.remove(raw_target)
+                            except Exception: pass
+                elif polaris_res.get("media_type") == "carousel" and polaris_res.get("media_list"):
+                    return polaris_res
+                elif polaris_res.get("image_url") and not must_be_video:
+                    raw_target = os.path.join(temp_dir, f"insta_img_{int(time.time())}.jpg")
+                    if await download_url_to_file(polaris_res["image_url"], raw_target):
+                        polaris_res["local_file"] = raw_target
+                    return polaris_res
+                elif polaris_res.get("image_url"):
+                    fallback_photo_res = polaris_res
+        except Exception as p_err:
+            logger.warning(f"Polaris scraper exception: {p_err}")
+
+        # B. Try User's Primary Render API First
         primary_res = await fetch_api_downloader(platform, expanded_url)
         if primary_res:
             if primary_res.get("video_url"):
@@ -1101,17 +1366,17 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
                     primary_res["local_file"] = raw_target
                 primary_res["platform"] = platform
                 return primary_res
-            elif primary_res.get("image_url"):
+            elif primary_res.get("image_url") and not fallback_photo_res:
                 fallback_photo_res = primary_res
 
-        # B. Multi-layer direct video scrapers (Embed scraper removed from video to avoid 1s teasers)
+        # C. Multi-layer direct video scrapers (Embed scraper removed from video to avoid 1s teasers)
         scrapers = [
             direct_instagram_graphql_scraper,
-            cobalt_instagram_scraper,
             direct_snapsave_scraper,
             direct_instagram_ajax_scraper,
             direct_indown_scraper,
-            direct_instagram_api_scraper
+            direct_instagram_api_scraper,
+            cobalt_instagram_scraper
         ]
 
         for scraper in scrapers:
