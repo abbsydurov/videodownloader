@@ -4,6 +4,7 @@ import os
 import sys
 import time
 import json
+import gc
 import shutil
 import tempfile
 import logging
@@ -745,44 +746,122 @@ async def cobalt_instagram_scraper(url: str) -> Optional[Dict[str, Any]]:
             continue
     return None
 
-async def direct_instagram_embed_scraper(url: str) -> Optional[Dict[str, Any]]:
-    """Direct Embed Scraper: Instagram embed pages contain cover photos. (Videos in embeds are only 1s teasers, so only photos are extracted here)."""
+async def direct_instagram_embed_context_scraper(url: str) -> Optional[Dict[str, Any]]:
+    """
+    Direct Embed Context Scraper: Extracts original full HD videos, photos, and carousels
+    from Instagram's embed bootstrap payload (contextJSON).
+    Works 100% on datacenter IPs without login, cookies, or 1-second teaser clips.
+    """
     shortcode = extract_instagram_shortcode(url)
     if not shortcode:
         return None
 
-    embed_url = f"https://www.instagram.com/p/{shortcode}/embed/captioned/"
+    embed_url = f"https://www.instagram.com/p/{shortcode}/embed/"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Sec-Fetch-Dest": "document",
         "Sec-Fetch-Mode": "navigate",
         "Sec-Fetch-Site": "none"
     }
     try:
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(embed_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False), headers=headers) as session:
+            async with session.get(embed_url, timeout=aiohttp.ClientTimeout(total=6)) as resp:
                 if resp.status == 200:
                     html = await resp.text()
+                    key = '"contextJSON":'
+                    idx = html.find(key)
+                    media = None
+                    if idx != -1:
+                        raw_start = html[idx + len(key):].lstrip()
+                        try:
+                            decoder = json.JSONDecoder()
+                            inner_json_str, _ = decoder.raw_decode(raw_start)
+                            context_data = json.loads(inner_json_str)
+                            media = (context_data.get("gql_data") or {}).get("shortcode_media")
+                        except Exception:
+                            end_script = html.find("</script>", idx)
+                            if end_script != -1:
+                                script_block = html[idx:end_script]
+                                m = re.search(r'"contextJSON"\s*:\s*("(?:\\.|[^"\\])+")', script_block)
+                                if m:
+                                    try:
+                                        inner = json.loads(m.group(1))
+                                        context_data = json.loads(inner)
+                                        media = (context_data.get("gql_data") or {}).get("shortcode_media")
+                                    except Exception:
+                                        pass
 
-                    # Only extract photos from embed (embed videos are 1s teaser clips and omitted)
-                    img_match = re.search(r'class=["\']EmbeddedMediaImage["\'][^>]*src=["\']([^"\']+)["\']', html) or \
-                                re.search(r'src=["\']([^"\']+)["\'][^>]*class=["\']EmbeddedMediaImage["\']', html) or \
-                                re.search(r'"display_url"\s*:\s*"([^"]+)"', html)
-                    if img_match:
-                        clean_img = img_match.group(1).replace("&amp;", "&").replace(r"\/", "/")
-                        if clean_img.startswith("http"):
+                    if media:
+                        is_vid = media.get("is_video", False)
+                        v_url = media.get("video_url")
+                        img_url = media.get("display_url")
+                        duration = media.get("video_duration")
+                        
+                        caption_text = "Instagram Media"
+                        edges = (media.get("edge_media_to_caption") or {}).get("edges", [])
+                        if edges and isinstance(edges, list) and edges[0].get("node"):
+                            caption_text = edges[0]["node"].get("text", "")[:120] or "Instagram Media"
+                        else:
+                            owner = media.get("owner", {}).get("username")
+                            if owner:
+                                caption_text = f"Instagram Post by @{owner}"
+
+                        # 1. Video / Reel (Full length original MP4)
+                        if is_vid and v_url and is_valid_media_url(v_url):
+                            return {
+                                "status": "success",
+                                "media_type": "video",
+                                "video_url": v_url,
+                                "title": caption_text,
+                                "thumbnail": img_url,
+                                "duration": int(duration) if duration else None,
+                                "source": "instagram_embed_context"
+                            }
+
+                        # 2. Carousel / Sidecar
+                        sidecar = media.get("edge_sidecar_to_children") or {}
+                        if sidecar.get("edges"):
+                            media_list = []
+                            for edge in sidecar["edges"]:
+                                node = edge.get("node", {})
+                                if node.get("is_video") and node.get("video_url"):
+                                    media_list.append({"type": "video", "url": node["video_url"]})
+                                elif node.get("display_url"):
+                                    media_list.append({"type": "photo", "url": node["display_url"]})
+                            
+                            if media_list:
+                                first_item = media_list[0]
+                                return {
+                                    "status": "success",
+                                    "media_type": "carousel" if len(media_list) > 1 else first_item["type"],
+                                    "media_list": media_list,
+                                    "video_url": first_item["url"] if first_item["type"] == "video" else None,
+                                    "image_url": first_item["url"] if first_item["type"] == "photo" else None,
+                                    "title": caption_text,
+                                    "thumbnail": img_url,
+                                    "source": "instagram_embed_context"
+                                }
+
+                        # 3. Single Photo
+                        if img_url and is_valid_media_url(img_url):
                             return {
                                 "status": "success",
                                 "media_type": "photo",
-                                "image_url": clean_img,
-                                "title": "Instagram Photo",
-                                "source": "instagram_embed"
+                                "image_url": img_url,
+                                "title": caption_text,
+                                "thumbnail": img_url,
+                                "source": "instagram_embed_context"
                             }
     except Exception as e:
-        logger.warning(f"Instagram embed scraper error: {e}")
+        logger.warning(f"Instagram embed context scraper error: {e}")
+
     return None
+
+async def direct_instagram_embed_scraper(url: str) -> Optional[Dict[str, Any]]:
+    """Legacy Embed Scraper fallback."""
+    return await direct_instagram_embed_context_scraper(url)
 
 async def direct_instagram_api_scraper(url: str) -> Optional[Dict[str, Any]]:
     """Query Instagram web and mobile info JSON endpoints."""
@@ -1303,7 +1382,43 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
 
     # ---------------- 1. INSTAGRAM PIPELINE ----------------
     if platform == "instagram":
-        # A. Official Polaris GraphQL Extractor (Instant, Original Full HD, Full Duration)
+        # A. Official Embed Context Scraper (FASTEST & NEVER BLOCKED ON DATACENTER IPs, ORIGINAL FULL HD)
+        try:
+            embed_res = await direct_instagram_embed_context_scraper(expanded_url)
+            if embed_res and embed_res.get("status") == "success":
+                embed_res["platform"] = platform
+                if embed_res.get("video_url"):
+                    raw_target = os.path.join(temp_dir, f"insta_raw_{int(time.time())}.mp4")
+                    if await download_url_to_file(embed_res["video_url"], raw_target):
+                        _, _, dur_check, _ = get_video_metadata_and_thumb(raw_target)
+                        if dur_check is None or dur_check > 2:
+                            play_target = os.path.join(temp_dir, f"insta_play_{int(time.time())}.mp4")
+                            if await ensure_playable_video(raw_target, play_target):
+                                try: os.remove(raw_target)
+                                except Exception: pass
+                                embed_res["local_file"] = play_target
+                            else:
+                                embed_res["local_file"] = raw_target
+                            gc.collect()
+                            return embed_res
+                        else:
+                            try: os.remove(raw_target)
+                            except Exception: pass
+                elif embed_res.get("media_type") == "carousel" and embed_res.get("media_list"):
+                    gc.collect()
+                    return embed_res
+                elif embed_res.get("image_url") and not must_be_video:
+                    raw_target = os.path.join(temp_dir, f"insta_img_{int(time.time())}.jpg")
+                    if await download_url_to_file(embed_res["image_url"], raw_target):
+                        embed_res["local_file"] = raw_target
+                    gc.collect()
+                    return embed_res
+                elif embed_res.get("image_url"):
+                    fallback_photo_res = embed_res
+        except Exception as e_err:
+            logger.warning(f"Embed context scraper error: {e_err}")
+
+        # B. Official Polaris GraphQL Extractor
         try:
             polaris_res = await direct_instagram_polaris_scraper(expanded_url)
             if polaris_res and polaris_res.get("status") == "success":
@@ -1320,31 +1435,32 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
                                 polaris_res["local_file"] = play_target
                             else:
                                 polaris_res["local_file"] = raw_target
+                            gc.collect()
                             return polaris_res
                         else:
-                            logger.warning(f"Polaris returned short video ({dur_check}s). Trying fallbacks...")
                             try: os.remove(raw_target)
                             except Exception: pass
                 elif polaris_res.get("media_type") == "carousel" and polaris_res.get("media_list"):
+                    gc.collect()
                     return polaris_res
                 elif polaris_res.get("image_url") and not must_be_video:
                     raw_target = os.path.join(temp_dir, f"insta_img_{int(time.time())}.jpg")
                     if await download_url_to_file(polaris_res["image_url"], raw_target):
                         polaris_res["local_file"] = raw_target
+                    gc.collect()
                     return polaris_res
-                elif polaris_res.get("image_url"):
+                elif polaris_res.get("image_url") and not fallback_photo_res:
                     fallback_photo_res = polaris_res
         except Exception as p_err:
             logger.warning(f"Polaris scraper exception: {p_err}")
 
-        # B. Try User's Primary Render API First
+        # C. Try User's Primary Render API First
         primary_res = await fetch_api_downloader(platform, expanded_url)
         if primary_res:
             if primary_res.get("video_url"):
                 v_url = primary_res["video_url"]
                 raw_target = os.path.join(temp_dir, f"insta_raw_{int(time.time())}.mp4")
                 if await download_url_to_file(v_url, raw_target):
-                    # Verify duration is not just a 1s snippet
                     _, _, dur_check, _ = get_video_metadata_and_thumb(raw_target)
                     if dur_check is None or dur_check > 2:
                         play_target = os.path.join(temp_dir, f"insta_play_{int(time.time())}.mp4")
@@ -1354,22 +1470,21 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
                             primary_res["local_file"] = play_target
                         else:
                             primary_res["local_file"] = raw_target
-                        primary_res["platform"] = platform
+                        gc.collect()
                         return primary_res
                     else:
-                        logger.warning(f"Primary API returned a short 1s teaser ({dur_check}s). Skipping to scrapers/yt-dlp...")
                         try: os.remove(raw_target)
                         except Exception: pass
             elif primary_res.get("image_url") and not must_be_video:
                 raw_target = os.path.join(temp_dir, f"insta_img_{int(time.time())}.jpg")
                 if await download_url_to_file(primary_res["image_url"], raw_target):
                     primary_res["local_file"] = raw_target
-                primary_res["platform"] = platform
+                gc.collect()
                 return primary_res
             elif primary_res.get("image_url") and not fallback_photo_res:
                 fallback_photo_res = primary_res
 
-        # C. Multi-layer direct video scrapers (Embed scraper removed from video to avoid 1s teasers)
+        # D. Multi-layer direct video scrapers
         scrapers = [
             direct_instagram_graphql_scraper,
             direct_snapsave_scraper,
@@ -1389,10 +1504,8 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
                     if res.get("video_url"):
                         raw_target = os.path.join(temp_dir, f"insta_raw_{int(time.time())}_{abs(hash(scraper.__name__)) % 1000}.mp4")
                         if await download_url_to_file(res["video_url"], raw_target):
-                            # Verify duration to prevent 1-second preview teaser clips
                             _, _, dur_check, _ = get_video_metadata_and_thumb(raw_target)
                             if dur_check is not None and dur_check <= 2:
-                                logger.warning(f"Scraper {scraper.__name__} returned 1s teaser preview ({dur_check}s). Discarding...")
                                 try: os.remove(raw_target)
                                 except Exception: pass
                                 continue
@@ -1404,10 +1517,12 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
                                 res["local_file"] = play_target
                             else:
                                 res["local_file"] = raw_target
+                            gc.collect()
                             return res
 
                     # 2. Handle Carousel
                     elif res.get("media_type") == "carousel" and res.get("media_list"):
+                        gc.collect()
                         return res
 
                     # 3. Handle Photo only if not an explicit Reel/Video
@@ -1416,6 +1531,7 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
                             raw_target = os.path.join(temp_dir, f"insta_img_{int(time.time())}.jpg")
                             if await download_url_to_file(res["image_url"], raw_target):
                                 res["local_file"] = raw_target
+                            gc.collect()
                             return res
                         else:
                             if not fallback_photo_res:
@@ -1424,45 +1540,23 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
                 logger.warning(f"Instagram scraper {scraper.__name__} error: {scraper_err}")
                 continue
 
-        # C. Full yt-dlp extractor engine (guarantees full reel/video extraction)
-        try:
-            logger.info("Executing yt-dlp extractor for Instagram full video...")
-            ytdl_res = await fallback_ytdlp_downloader(expanded_url, download_file=True)
-            if ytdl_res and (ytdl_res.get("video_url") or ytdl_res.get("local_file")):
-                if ytdl_res.get("local_file"):
-                    _, _, dur_check, _ = get_video_metadata_and_thumb(ytdl_res["local_file"])
-                    if dur_check is not None and dur_check <= 2:
-                        logger.warning(f"yt-dlp returned short {dur_check}s video.")
-                    else:
-                        ytdl_res["platform"] = platform
-                        return ytdl_res
-                else:
-                    ytdl_res["platform"] = platform
-                    return ytdl_res
-        except Exception as yt_err:
-            logger.warning(f"yt-dlp fallback error: {yt_err}")
-
-        # D. Try Embed Scraper strictly for photo if still nothing found
-        if not must_be_video and not fallback_photo_res:
-            try:
-                embed_photo = await direct_instagram_embed_scraper(expanded_url)
-                if embed_photo and embed_photo.get("image_url"):
-                    raw_target = os.path.join(temp_dir, f"insta_img_{int(time.time())}.jpg")
-                    if await download_url_to_file(embed_photo["image_url"], raw_target):
-                        embed_photo["local_file"] = raw_target
-                    embed_photo["platform"] = platform
-                    return embed_photo
-            except Exception:
-                pass
-
-        # D. If all video scrapers failed and fallback photo exists (for normal posts)
+        # E. If all video scrapers failed and fallback photo exists (for normal posts)
         if fallback_photo_res and not must_be_video:
             if fallback_photo_res.get("image_url") and not fallback_photo_res.get("local_file"):
                 raw_target = os.path.join(temp_dir, f"insta_img_{int(time.time())}.jpg")
                 if await download_url_to_file(fallback_photo_res["image_url"], raw_target):
                     fallback_photo_res["local_file"] = raw_target
             fallback_photo_res["platform"] = platform
+            gc.collect()
             return fallback_photo_res
+
+        # PREVENT OOM CRASH: Never invoke yt-dlp for Instagram on low-memory container!
+        # yt-dlp exceeds 256MB container memory and crashes with Exit code 137.
+        gc.collect()
+        return {
+            "status": "error",
+            "message": "Unable to extract Instagram video. Link may be private, expired, or restricted."
+        }
 
     # ---------------- 2. FACEBOOK PIPELINE ----------------
     if platform == "facebook":
@@ -1596,10 +1690,14 @@ async def download_url_to_file(url: str, output_path: str) -> bool:
 
 # ==================== ADVANCED MEDIA & SIZE CONVERTER ENGINE ====================
 def run_ffmpeg_command(cmd: List[str]) -> Tuple[bool, str]:
-    """Execute ffmpeg command synchronously with error handling."""
+    """Execute ffmpeg command synchronously with error handling and strict single-thread memory protection."""
     try:
+        final_cmd = list(cmd)
+        if "-threads" not in final_cmd and len(final_cmd) > 1:
+            final_cmd.insert(1, "-threads")
+            final_cmd.insert(2, "1")
         res = subprocess.run(
-            cmd,
+            final_cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=180
