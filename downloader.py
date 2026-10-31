@@ -299,8 +299,6 @@ async def direct_instagram_graphql_scraper(url: str) -> Optional[Dict[str, Any]]
     encoded_vars = urllib.parse.quote(vars_json)
 
     urls_to_try = [
-        f"https://www.instagram.com/graphql/query/?doc_id=8845758582119845&variables={{\"shortcode\":\"{shortcode}\"}}",
-        f"https://www.instagram.com/p/{shortcode}/?__a=1&__d=dis"
         f"https://www.instagram.com/graphql/query/?doc_id=8845758582119845&variables={encoded_vars}",
         f"https://www.instagram.com/graphql/query/?doc_id=10015901848480474&variables={encoded_vars}",
         f"https://www.instagram.com/graphql/query/?doc_id=25531498899829322&variables={encoded_vars}",
@@ -474,12 +472,8 @@ async def direct_instagram_ajax_scraper(url: str) -> Optional[Dict[str, Any]]:
     return None
 
 async def cobalt_instagram_scraper(url: str) -> Optional[Dict[str, Any]]:
-    """Query multi-instance Cobalt engine for Instagram links."""
     """Query multi-instance Cobalt engine (v7 and v10) for Instagram links."""
     instances = [
-        "https://co.wuk.sh/api/json",
-        "https://cobalt-api.kwiatekm.pl/api/json",
-        "https://api.cobalt.tools/api/json"
         ("https://api.cobalt.tools", "v10"),
         ("https://cobalt-api.kwiatekm.pl", "v10"),
         ("https://cobalt.api.scip.dev", "v10"),
@@ -487,7 +481,6 @@ async def cobalt_instagram_scraper(url: str) -> Optional[Dict[str, Any]]:
         ("https://co.wuk.sh/api/json", "v7"),
         ("https://api.cobalt.tools/api/json", "v7")
     ]
-    for inst in instances:
     for inst, ver in instances:
         try:
             headers = {
@@ -495,7 +488,6 @@ async def cobalt_instagram_scraper(url: str) -> Optional[Dict[str, Any]]:
                 "Content-Type": "application/json",
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             }
-            payload = {"url": url, "vQuality": "max"}
             if ver == "v10":
                 endpoint = f"{inst}/"
                 payload = {"url": url, "videoQuality": "max"}
@@ -504,7 +496,6 @@ async def cobalt_instagram_scraper(url: str) -> Optional[Dict[str, Any]]:
                 payload = {"url": url, "vQuality": "max"}
 
             async with aiohttp.ClientSession(headers=headers) as session:
-                async with session.post(inst, json=payload, timeout=aiohttp.ClientTimeout(total=8)) as resp:
                 async with session.post(endpoint, json=payload, timeout=aiohttp.ClientTimeout(total=8)) as resp:
                     if resp.status == 200:
                         res = await resp.json()
@@ -527,7 +518,6 @@ async def cobalt_instagram_scraper(url: str) -> Optional[Dict[str, Any]]:
     return None
 
 async def direct_instagram_embed_scraper(url: str) -> Optional[Dict[str, Any]]:
-    """Direct Embed Scraper: Instagram embed pages contain direct CDN video or photo URLs."""
     """Direct Embed Scraper: Instagram embed pages contain cover photos. (Videos in embeds are only 1s teasers, so only photos are extracted here)."""
     shortcode = extract_instagram_shortcode(url)
     if not shortcode:
@@ -548,27 +538,6 @@ async def direct_instagram_embed_scraper(url: str) -> Optional[Dict[str, Any]]:
                 if resp.status == 200:
                     html = await resp.text()
 
-                    v_match = (
-                        re.search(r'class=["\']EmbeddedVideo["\'][^>]*src=["\']([^"\']+)["\']', html) or
-                        re.search(r'src=["\']([^"\']+)["\'][^>]*class=["\']EmbeddedVideo["\']', html) or
-                        re.search(r'"video_url"\s*:\s*"([^"]+)"', html) or
-                        re.search(r'video_url:\s*["\']([^"\']+)["\']', html) or
-                        re.search(r'"video_versions":\[\{"url":"([^"]+)"', html) or
-                        re.search(r'https?:\\/\\/[^\s"\'<>]+\.mp4[^\s"\'<>]*', html)
-                    )
-
-                    if v_match:
-                        clean_url = v_match.group(1).replace("&amp;", "&").replace(r"\/", "/") if hasattr(v_match, 'group') and v_match.group(1) else v_match.group(0).replace(r"\/", "/").replace("&amp;", "&")
-                        if clean_url.startswith("http"):
-                            logger.info(f"Instagram embed scraper success for shortcode {shortcode}")
-                            return {
-                                "status": "success",
-                                "media_type": "video",
-                                "video_url": clean_url,
-                                "title": "Instagram Video",
-                                "source": "instagram_embed"
-                            }
-                    
                     # Only extract photos from embed (embed videos are 1s teaser clips and omitted)
                     img_match = re.search(r'class=["\']EmbeddedMediaImage["\'][^>]*src=["\']([^"\']+)["\']', html) or \
                                 re.search(r'src=["\']([^"\']+)["\'][^>]*class=["\']EmbeddedMediaImage["\']', html) or \
@@ -813,7 +782,6 @@ async def fallback_ytdlp_downloader(url: str, download_file: bool = True) -> Opt
             ydl_opts = {
                 'quiet': True,
                 'no_warnings': True,
-                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                 'format': 'best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best',
                 'merge_output_format': 'mp4',
                 'skip_download': not download_file,
@@ -1111,8 +1079,6 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
                 v_url = primary_res["video_url"]
                 raw_target = os.path.join(temp_dir, f"insta_raw_{int(time.time())}.mp4")
                 if await download_url_to_file(v_url, raw_target):
-                    play_target = os.path.join(temp_dir, f"insta_play_{int(time.time())}.mp4")
-                    if await ensure_playable_video(raw_target, play_target):
                     # Verify duration is not just a 1s snippet
                     _, _, dur_check, _ = get_video_metadata_and_thumb(raw_target)
                     if dur_check is None or dur_check > 2:
@@ -1129,11 +1095,6 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
                         logger.warning(f"Primary API returned a short 1s teaser ({dur_check}s). Skipping to scrapers/yt-dlp...")
                         try: os.remove(raw_target)
                         except Exception: pass
-                        primary_res["local_file"] = play_target
-                    else:
-                        primary_res["local_file"] = raw_target
-                    primary_res["platform"] = platform
-                    return primary_res
             elif primary_res.get("image_url") and not must_be_video:
                 raw_target = os.path.join(temp_dir, f"insta_img_{int(time.time())}.jpg")
                 if await download_url_to_file(primary_res["image_url"], raw_target):
@@ -1143,16 +1104,12 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
             elif primary_res.get("image_url"):
                 fallback_photo_res = primary_res
 
-        # B. Multi-layer direct video scrapers
         # B. Multi-layer direct video scrapers (Embed scraper removed from video to avoid 1s teasers)
         scrapers = [
             direct_instagram_graphql_scraper,
             cobalt_instagram_scraper,
             direct_snapsave_scraper,
-            direct_instagram_graphql_scraper,
             direct_instagram_ajax_scraper,
-            cobalt_instagram_scraper,
-            direct_instagram_embed_scraper,
             direct_indown_scraper,
             direct_instagram_api_scraper
         ]
@@ -1165,10 +1122,8 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
                     
                     # 1. Handle Video
                     if res.get("video_url"):
-                        raw_target = os.path.join(temp_dir, f"insta_raw_{int(time.time())}.mp4")
                         raw_target = os.path.join(temp_dir, f"insta_raw_{int(time.time())}_{abs(hash(scraper.__name__)) % 1000}.mp4")
                         if await download_url_to_file(res["video_url"], raw_target):
-                            play_target = os.path.join(temp_dir, f"insta_play_{int(time.time())}.mp4")
                             # Verify duration to prevent 1-second preview teaser clips
                             _, _, dur_check, _ = get_video_metadata_and_thumb(raw_target)
                             if dur_check is not None and dur_check <= 2:
@@ -1184,7 +1139,6 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
                                 res["local_file"] = play_target
                             else:
                                 res["local_file"] = raw_target
-                        return res
                             return res
 
                     # 2. Handle Carousel
@@ -1205,14 +1159,11 @@ async def download_media(url: str, force_local_download: bool = True) -> Dict[st
                 logger.warning(f"Instagram scraper {scraper.__name__} error: {scraper_err}")
                 continue
 
-        # C. Fallback to yt-dlp extractor engine
         # C. Full yt-dlp extractor engine (guarantees full reel/video extraction)
         try:
             logger.info("Executing yt-dlp extractor for Instagram full video...")
             ytdl_res = await fallback_ytdlp_downloader(expanded_url, download_file=True)
             if ytdl_res and (ytdl_res.get("video_url") or ytdl_res.get("local_file")):
-                ytdl_res["platform"] = platform
-                return ytdl_res
                 if ytdl_res.get("local_file"):
                     _, _, dur_check, _ = get_video_metadata_and_thumb(ytdl_res["local_file"])
                     if dur_check is not None and dur_check <= 2:
